@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment (never commit real secrets — only *.example is versioned)
+.env
+.env.*.local
+.env.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Coverage / test
+coverage/
+.nyc_output/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Next.js (frontend, bloque 3)
+.next/
+out/
+.vercel/
