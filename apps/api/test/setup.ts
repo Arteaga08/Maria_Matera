@@ -11,6 +11,7 @@ import { MongoMemoryServer } from "mongodb-memory-server";
 process.env.NODE_ENV ??= "test";
 process.env.JWT_ACCESS_SECRET ??= "test_access_secret_minimo_32_caracteres_aaaa";
 process.env.JWT_REFRESH_SECRET ??= "test_refresh_secret_minimo_32_caracteres_bbbb";
+process.env.ENCRYPTION_KEY ??= "test_encryption_key_minimo_32_caracteres_cccc";
 process.env.CLIENT_URL ??= "http://localhost:3000";
 process.env.APP_URL ??= "http://localhost:3000";
 process.env.MONGO_URI ??= "mongodb://127.0.0.1:27017/placeholder";

@@ -32,6 +32,15 @@ const token = Joi.string().hex().length(64).required().messages({
   "any.required": "El token es obligatorio.",
 });
 
+const totp = Joi.string()
+  .trim()
+  .pattern(/^\d{6}$/)
+  .messages({
+    "string.pattern.base": "El código de verificación debe tener 6 dígitos.",
+    "string.empty": "El código de verificación es obligatorio.",
+    "any.required": "El código de verificación es obligatorio.",
+  });
+
 const registerSchema = Joi.object({
   name: Joi.string().trim().min(2).max(120).required().messages({
     "string.min": "El nombre debe tener al menos 2 caracteres.",
@@ -64,7 +73,10 @@ const adminLoginSchema = Joi.object({
     "string.empty": "La contraseña es obligatoria.",
     "any.required": "La contraseña es obligatoria.",
   }),
+  totp: totp.optional(),
 });
+
+const twoFactorSchema = Joi.object({ totp: totp.required() });
 
 export {
   registerSchema,
@@ -73,4 +85,5 @@ export {
   forgotPasswordSchema,
   resetPasswordSchema,
   adminLoginSchema,
+  twoFactorSchema,
 };

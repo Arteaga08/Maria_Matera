@@ -3,10 +3,11 @@ import { AdminUser, type AdminUserDocument } from "../models/AdminUser.js";
 import { AppError } from "../utils/AppError.js";
 import type { AuthTokens } from "../utils/cookies.js";
 import { issueSession } from "./session.service.js";
+import { verifyAdminTotp } from "./twoFactor.service.js";
 
 /**
  * Admin authentication. Same anti-enumeration generic error as customer login.
- * 2FA TOTP gating is added in Paso 1b.
+ * When 2FA is enabled, a valid TOTP code is required in addition to the password.
  */
 
 interface AdminDto {
@@ -26,10 +27,20 @@ const toAdminDto = (admin: AdminUserDocument): AdminDto => ({
 const login = async (
   email: string,
   password: string,
+  totp?: string,
 ): Promise<{ tokens: AuthTokens; user: AdminDto }> => {
-  const admin = await AdminUser.findOne({ email }).select("+password");
+  const admin = await AdminUser.findOne({ email }).select("+password +twoFactor.secret");
   if (!admin || !(await admin.comparePassword(password))) {
     throw new AppError("Correo o contraseña incorrectos.", 401);
+  }
+
+  if (admin.twoFactor.enabled) {
+    if (!totp) {
+      throw new AppError("Se requiere el código de verificación de dos pasos.", 401);
+    }
+    if (!admin.twoFactor.secret || !verifyAdminTotp(admin.twoFactor.secret, totp)) {
+      throw new AppError("Código de verificación incorrecto.", 401);
+    }
   }
 
   const tokens = await issueSession({

@@ -8,6 +8,7 @@ import {
   setAuthCookies,
 } from "../utils/cookies.js";
 import * as adminAuth from "../services/adminAuth.service.js";
+import * as twoFactor from "../services/twoFactor.service.js";
 import { revokeSession, rotateSession } from "../services/session.service.js";
 
 /**
@@ -21,10 +22,29 @@ const readRefreshCookie = (req: Request): string | undefined =>
   (req.cookies as Record<string, string | undefined>)?.[REFRESH_COOKIE];
 
 const login = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
-  const { tokens, user } = await adminAuth.login(email, password);
+  const { email, password, totp } = req.body;
+  const { tokens, user } = await adminAuth.login(email, password, totp);
   setAuthCookies(res, tokens, ADMIN_REFRESH_PATH);
   sendResponse({ res, message: "Sesión iniciada.", data: { user } });
+});
+
+const setup2fa = asyncHandler(async (req, res) => {
+  const data = await twoFactor.setupTwoFactor(req.auth!.id);
+  sendResponse({
+    res,
+    message: "Escanea el código en tu app de autenticación y confirma con un código.",
+    data,
+  });
+});
+
+const enable2fa = asyncHandler(async (req, res) => {
+  await twoFactor.enableTwoFactor(req.auth!.id, req.body.totp);
+  sendResponse({ res, message: "Autenticación de dos pasos activada.", data: null });
+});
+
+const disable2fa = asyncHandler(async (req, res) => {
+  await twoFactor.disableTwoFactor(req.auth!.id, req.body.totp);
+  sendResponse({ res, message: "Autenticación de dos pasos desactivada.", data: null });
 });
 
 const refresh = asyncHandler(async (req, res) => {
@@ -51,4 +71,4 @@ const me = asyncHandler(async (req, res) => {
   sendResponse({ res, message: "Perfil del administrador.", data: { user } });
 });
 
-export { login, refresh, logout, me };
+export { login, refresh, logout, me, setup2fa, enable2fa, disable2fa };

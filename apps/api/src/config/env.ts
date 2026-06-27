@@ -22,6 +22,7 @@ interface Env {
   mongoUri: string;
   jwtAccessSecret: string;
   jwtRefreshSecret: string;
+  encryptionKey: string;
   accessTokenTtlMin: number;
   refreshTokenTtlDays: number;
   appUrl: string;
@@ -49,7 +50,7 @@ const loadEnvFile = (nodeEnv: NodeEnv): void => {
   const envFile = path.join(apiRoot, `.env.${nodeEnv}.local`);
   if (existsSync(envFile)) {
     dotenv.config({ path: envFile });
-  } else if (nodeEnv !== "production") {
+  } else if (nodeEnv === "development") {
     process.stderr.write(`[env] Aviso: no se encontro ${envFile}; usando variables del proceso.\n`);
   }
 };
@@ -120,6 +121,7 @@ const loadEnv = (): Env => {
     mongoUri: required("MONGO_URI"),
     jwtAccessSecret,
     jwtRefreshSecret,
+    encryptionKey: requiredSecret("ENCRYPTION_KEY"),
     accessTokenTtlMin: optionalInt("ACCESS_TOKEN_TTL_MIN", 15),
     refreshTokenTtlDays: optionalInt("REFRESH_TOKEN_TTL_DAYS", 7),
     appUrl: process.env.APP_URL?.trim() || allowedOrigins[0]!,
