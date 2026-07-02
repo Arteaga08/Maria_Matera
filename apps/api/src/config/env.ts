@@ -27,6 +27,9 @@ interface Env {
   refreshTokenTtlDays: number;
   appUrl: string;
   allowedOrigins: string[];
+  cloudinary: { cloudName: string; apiKey: string; apiSecret: string };
+  email: { user: string; pass: string; from: string };
+  telegram: { botToken: string; chatId: string };
 }
 
 const fail = (message: string): never => {
@@ -126,6 +129,20 @@ const loadEnv = (): Env => {
     refreshTokenTtlDays: optionalInt("REFRESH_TOKEN_TTL_DAYS", 7),
     appUrl: process.env.APP_URL?.trim() || allowedOrigins[0]!,
     allowedOrigins,
+    cloudinary: {
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME?.trim() ?? "",
+      apiKey: process.env.CLOUDINARY_API_KEY?.trim() ?? "",
+      apiSecret: process.env.CLOUDINARY_API_SECRET?.trim() ?? "",
+    },
+    email: {
+      user: process.env.EMAIL_USER?.trim() ?? "",
+      pass: process.env.EMAIL_PASS?.trim() ?? "",
+      from: process.env.EMAIL_FROM?.trim() ?? "",
+    },
+    telegram: {
+      botToken: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "",
+      chatId: process.env.TELEGRAM_CHAT_ID?.trim() ?? "",
+    },
   };
 
   return Object.freeze(env);

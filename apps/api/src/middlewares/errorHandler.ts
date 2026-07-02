@@ -37,6 +37,9 @@ const normalizeError = (error: unknown): NormalizedError => {
   if (getCode(error) === 11000) {
     return { statusCode: 409, message: "El recurso ya existe", isOperational: true };
   }
+  if (hasName(error, "MulterError")) {
+    return { statusCode: 400, message: "Error al subir el archivo", isOperational: true };
+  }
   if (hasName(error, "JsonWebTokenError") || hasName(error, "TokenExpiredError")) {
     return { statusCode: 401, message: "Sesion invalida o expirada", isOperational: true };
   }

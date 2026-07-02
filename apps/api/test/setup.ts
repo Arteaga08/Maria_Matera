@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll } from "vitest";
 import mongoose from "mongoose";
-import { MongoMemoryServer } from "mongodb-memory-server";
+import { MongoMemoryReplSet } from "mongodb-memory-server";
 
 /**
  * Test bootstrap. Env vars must be set BEFORE any module that reads them
@@ -16,11 +16,17 @@ process.env.CLIENT_URL ??= "http://localhost:3000";
 process.env.APP_URL ??= "http://localhost:3000";
 process.env.MONGO_URI ??= "mongodb://127.0.0.1:27017/placeholder";
 
-let mongo: MongoMemoryServer;
+// Replica set (single node) so multi-document transactions work in tests.
+let mongo: MongoMemoryReplSet;
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
+  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri());
+  // Pre-create collections + indexes so multi-document transactions never have
+  // to implicitly create a collection (which would fail with a lock error).
+  await Promise.all(
+    mongoose.modelNames().map((name) => mongoose.model(name).createCollection()),
+  );
 });
 
 afterEach(async () => {

@@ -18,6 +18,9 @@ const SENSITIVE_KEYS = new Set([
   "refreshToken",
 ]);
 
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  Object.prototype.toString.call(value) === "[object Object]";
+
 const sanitizeValue = (value: unknown, key?: string): unknown => {
   if (typeof value === "string") {
     return key && SENSITIVE_KEYS.has(key) ? value : xss(value);
@@ -25,7 +28,8 @@ const sanitizeValue = (value: unknown, key?: string): unknown => {
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeValue(item));
   }
-  if (typeof value === "object" && value !== null) {
+  // Only recurse into plain objects; pass through Date, Buffer, ObjectId, etc.
+  if (isPlainObject(value)) {
     const result: Record<string, unknown> = {};
     for (const [childKey, childValue] of Object.entries(value)) {
       result[childKey] = sanitizeValue(childValue, childKey);

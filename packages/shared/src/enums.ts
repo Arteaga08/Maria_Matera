@@ -75,6 +75,20 @@ const TokenType = {
 } as const;
 type TokenType = (typeof TokenType)[keyof typeof TokenType];
 
+const CouponType = {
+  Percent: "percent",
+  Fixed: "fixed",
+  FreeShipping: "free_shipping",
+} as const;
+type CouponType = (typeof CouponType)[keyof typeof CouponType];
+
+const SubscriberStatus = {
+  Pending: "pending",
+  Subscribed: "subscribed",
+  Unsubscribed: "unsubscribed",
+} as const;
+type SubscriberStatus = (typeof SubscriberStatus)[keyof typeof SubscriberStatus];
+
 export {
   ProductCategory,
   OrderStatus,
@@ -86,4 +100,6 @@ export {
   Currency,
   UserType,
   TokenType,
+  CouponType,
+  SubscriberStatus,
 };
