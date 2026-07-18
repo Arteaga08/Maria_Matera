@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { AdminRole } from "@maria-matera/shared";
 import { buildApp } from "../../src/app.js";
@@ -10,7 +10,12 @@ import { emailService } from "../../src/services/email.service.js";
  * routes; verified customers are denied admin routes (restrictTo).
  */
 
-const app = buildApp();
+// A real listening server (not the bare Express app) held open for the whole
+// file — see `address.test.ts` for why: supertest otherwise spins up its OWN
+// ephemeral `http.Server` per request, and that churn under full-suite
+// concurrency is a known source of a rare port-reuse parse-error flake.
+const app = buildApp().listen();
+afterAll(() => new Promise<void>((resolve) => app.close(() => resolve())));
 const ADMIN_PASSWORD = "AdminPass123";
 
 const createAdmin = async () => {

@@ -11,13 +11,20 @@ import { CustomerTier } from "@maria-matera/shared";
 const BCRYPT_ROUNDS = 12;
 
 interface Address {
+  _id: Types.ObjectId;
   label: string;
   line1: string;
   city: string;
   state: string;
   zip: string;
   country: string;
-  isDefault: boolean;
+  isDefaultShipping: boolean;
+  isDefaultBilling: boolean;
+  // CFDI (Mexican tax-invoice) fields — unused/unconsumed until the future
+  // timbrado/CFDI phase. Plain optional strings, no format validation yet.
+  rfc?: string;
+  cfdiUse?: string;
+  taxRegime?: string;
 }
 
 interface CustomerDocument extends Document {
@@ -26,7 +33,7 @@ interface CustomerDocument extends Document {
   password: string;
   emailVerified: boolean;
   tier: CustomerTier;
-  addresses: Address[];
+  addresses: Types.DocumentArray<Address>;
   wishlist: Types.ObjectId[];
   marketingConsent: boolean;
   createdAt: Date;
@@ -42,7 +49,11 @@ const addressSchema = new Schema<Address>(
     state: { type: String, required: true, trim: true, maxlength: 100 },
     zip: { type: String, required: true, trim: true, maxlength: 20 },
     country: { type: String, required: true, trim: true, maxlength: 60, default: "México" },
-    isDefault: { type: Boolean, default: false },
+    isDefaultShipping: { type: Boolean, default: false },
+    isDefaultBilling: { type: Boolean, default: false },
+    rfc: { type: String, trim: true, maxlength: 13 },
+    cfdiUse: { type: String, trim: true, maxlength: 10 },
+    taxRegime: { type: String, trim: true, maxlength: 10 },
   },
   { _id: true },
 );
