@@ -33,6 +33,7 @@
     "pino": "^9.5.0",
     "pino-http": "^10.3.0",
     "slugify": "^1.6.6",
+    "stripe": "^22.3.2",
     "xss": "^1.0.15"
   },
   "devDependencies": {

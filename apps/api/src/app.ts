@@ -13,6 +13,7 @@ import { securityHeaders } from "./middlewares/securityHeaders.js";
 import { notFound } from "./middlewares/notFound.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
 import { apiRouter } from "./routes/index.js";
+import { webhookRouter } from "./routes/webhook.routes.js";
 
 /**
  * Builds and configures the Express application. Kept separate from `server.ts`
@@ -37,8 +38,10 @@ const buildApp = (): Express => {
   app.use(securityHeaders);
   app.use(cors(corsOptions));
 
-  // NOTE: payment webhooks (Stripe/Mercado Pago) need the RAW body and must be
-  // mounted BEFORE express.json() when that feature lands.
+  // Payment webhooks need the RAW body and Stripe-signature auth, so they are
+  // mounted BEFORE express.json()/cookieParser/sanitizers/verifyOrigin/rate
+  // limiter. The router uses express.raw internally on its own route only.
+  app.use("/api/v1/webhooks", webhookRouter);
 
   app.use(express.json({ limit: "10kb" }));
   app.use(cookieParser());

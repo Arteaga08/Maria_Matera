@@ -31,3 +31,6 @@ Thumbs.db
 .next/
 out/
 .vercel/
+
+# Git worktrees (isolated workspaces for subagent-driven development)
+.worktrees/

@@ -3,6 +3,13 @@ import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
 import { connectDatabase, disconnectDatabase } from "./config/db.js";
 import { buildApp } from "./app.js";
+import * as orderService from "./services/order.service.js";
+
+// Reconciliation sweep interval. Every 5 min comfortably beats the 15-min
+// reservation TTL, so a lost/delayed `payment_intent.succeeded` webhook is
+// caught (order marked paid) — or an abandoned checkout cancelled — within one
+// cycle of expiry, without hammering Stripe.
+const RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
  * Process bootstrap: load env (already validated on import), connect to
@@ -17,6 +24,17 @@ const start = async (): Promise<void> => {
   const server: Server = app.listen(env.port, () => {
     logger.info(`API escuchando en el puerto ${env.port} (${env.nodeEnv})`);
   });
+
+  // Backstop for lost/delayed payment webhooks. No-op in the test suite (guarded
+  // like `createRateLimiter`) so it never interferes with mongodb-memory-server
+  // timing; runs in dev + production. `.unref()` so it never blocks shutdown.
+  if (env.nodeEnv !== "test") {
+    setInterval(() => {
+      void orderService.reconcilePendingOrders().catch((error: unknown) => {
+        logger.error({ err: error }, "Fallo en la reconciliación de órdenes pendientes.");
+      });
+    }, RECONCILE_INTERVAL_MS).unref();
+  }
 
   const shutdown = (signal: string): void => {
     logger.info(`Recibida senal ${signal}, cerrando...`);

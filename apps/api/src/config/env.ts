@@ -30,6 +30,8 @@ interface Env {
   cloudinary: { cloudName: string; apiKey: string; apiSecret: string };
   email: { user: string; pass: string; from: string };
   telegram: { botToken: string; chatId: string };
+  stripeSecretKey: string;
+  stripeWebhookSecret: string;
 }
 
 const fail = (message: string): never => {
@@ -143,6 +145,8 @@ const loadEnv = (): Env => {
       botToken: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "",
       chatId: process.env.TELEGRAM_CHAT_ID?.trim() ?? "",
     },
+    stripeSecretKey: required("STRIPE_SECRET_KEY"),
+    stripeWebhookSecret: required("STRIPE_WEBHOOK_SECRET"),
   };
 
   return Object.freeze(env);
