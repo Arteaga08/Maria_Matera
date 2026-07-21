@@ -1,7 +1,9 @@
 import type { Request, Response } from "express";
+import { PaymentStatus } from "@maria-matera/shared";
 import { logger } from "../config/logger.js";
 import { ProcessedWebhookEvent } from "../models/ProcessedWebhookEvent.js";
 import { stripeProvider } from "../services/payment/stripe.provider.js";
+import { mercadopagoProvider } from "../services/payment/mercadopago.provider.js";
 import type { PaymentWebhookEvent } from "../services/payment/payment.provider.js";
 import * as orderService from "../services/order.service.js";
 
@@ -153,4 +155,150 @@ const stripeWebhook = async (req: Request, res: Response): Promise<void> => {
   res.status(200).json({ received: true });
 };
 
-export { stripeWebhook };
+/** System actor label stamped on Mercado Pago webhook-driven history entries. */
+const MP_WEBHOOK_ACTOR = "system:mercadopago-webhook";
+
+/**
+ * Extracts the MP payment id from the `data.id` query param (the key literally
+ * contains a dot under Express's default query parser), falling back to the
+ * notification body's `data.id` when the query omits it.
+ */
+const dataIdOf = (req: Request): string | undefined => {
+  const fromQuery = req.query["data.id"];
+  if (typeof fromQuery === "string") {
+    return fromQuery;
+  }
+  try {
+    const parsed = JSON.parse((req.body as Buffer).toString("utf8")) as { data?: { id?: unknown } };
+    const id = parsed.data?.id;
+    return id === undefined || id === null ? undefined : String(id);
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * Mercado Pago payment webhook. Authenticated by MP's HMAC signature over a
+ * manifest built from `x-signature` / `x-request-id` / `data.id` (never
+ * cookies/origin), so — like `/stripe` — this route is mounted before
+ * `express.json`, `cookieParser`, sanitizers, `verifyOrigin` and the rate
+ * limiter, and reads the body via `express.raw`. Flow: verify signature →
+ * ignore non-`payment` topics → dedupe by `event.id` → look up the payment →
+ * dispatch → 2xx. A non-2xx makes Mercado Pago retry, so we only ever return
+ * non-2xx for a genuine signature failure (400) or an unexpected server error.
+ */
+const mercadopagoWebhook = async (req: Request, res: Response): Promise<void> => {
+  const signature = req.headers["x-signature"];
+  const requestIdHeader = req.headers["x-request-id"];
+  const requestId = typeof requestIdHeader === "string" ? requestIdHeader : undefined;
+  const dataId = dataIdOf(req);
+
+  // 1. Verify the signature over the RAW body FIRST. Anything unverifiable is
+  //    rejected 400 immediately with zero processing.
+  let event: PaymentWebhookEvent;
+  try {
+    event = mercadopagoProvider.constructWebhookEvent(
+      req.body as Buffer,
+      typeof signature === "string" ? signature : undefined,
+      { requestId, dataId },
+    );
+  } catch (error) {
+    logger.warn({ err: error }, "Firma de webhook inválida.");
+    res.status(400).json({ status: "fail", message: "Firma de webhook inválida." });
+    return;
+  }
+
+  // 2. MP sends several topics (`payment`, `merchant_order`, etc.) to the same
+  //    URL; only `payment` correlates to an order transition here. Acknowledge
+  //    the rest without deduping — there is no per-delivery side effect to
+  //    guard against a re-send.
+  if (event.type !== "payment") {
+    res.status(200).json({ received: true, ignored: true });
+    return;
+  }
+
+  // 3. Dedupe by event id: MP delivers at-least-once (and even re-sends the
+  //    SAME notification id on a slow response). The unique index turns a
+  //    re-delivery into an E11000 → already handled, answer 200 without
+  //    reprocessing.
+  try {
+    await ProcessedWebhookEvent.create({ eventId: event.id });
+  } catch (error) {
+    if (isDuplicateKeyError(error)) {
+      res.status(200).json({ received: true, duplicate: true });
+      return;
+    }
+    throw error;
+  }
+
+  // 4. Process, then acknowledge. If dispatch throws, undo the dedupe insert
+  //    first — otherwise a genuine MP retry of THIS delivery would be silently
+  //    swallowed by the dedupe record that already exists, and the event
+  //    would never be reprocessed.
+  try {
+    const paymentId = String(event.data.object.id);
+
+    if (!paymentId) {
+      // No usable `data.id` to look up — calling `getPaymentById("")` would
+      // throw, triggering the dedupe rollback below and a 500 that MP would
+      // retry forever for an event we can never resolve. Acknowledge instead;
+      // the dedupe row from step 3 stays (harmless — this notification id is
+      // genuinely handled, just with nothing to correlate).
+      logger.warn({ eventId: event.id }, "Webhook de Mercado Pago sin id de pago.");
+    } else {
+      const { status, orderId } = await mercadopagoProvider.getPaymentById(paymentId);
+
+      if (!orderId) {
+        // No `external_reference` to correlate against — nothing we can do, and
+        // NOT throwing avoids an infinite MP retry loop for an uncorrelatable event.
+        logger.warn(
+          { eventId: event.id, paymentId },
+          "Webhook de Mercado Pago sin orden correlacionada.",
+        );
+      } else {
+        switch (status) {
+          case PaymentStatus.Paid:
+            await orderService.markPaidByPaymentRef(orderId, MP_WEBHOOK_ACTOR);
+            break;
+
+          case PaymentStatus.Refunded:
+            await orderService.refundByPaymentRef(
+              orderId,
+              "Reembolso procesado en Mercado Pago.",
+              MP_WEBHOOK_ACTOR,
+            );
+            break;
+
+          case PaymentStatus.Failed:
+            // A failed ATTEMPT is NOT terminal: Mercado Pago Checkout Pro lets
+            // the buyer retry with another card under the SAME
+            // `external_reference`, so a later `Paid` notification for this
+            // same order is entirely possible. Cancelling (and releasing
+            // stock) now, then a later success, is a silent-money-loss path —
+            // mirrors Stripe's `payment_intent.payment_failed` handling. A
+            // genuinely abandoned checkout is cancelled by
+            // `reconcilePendingOrders` once its reservation expires.
+            logger.info(
+              { eventId: event.id, orderId, status },
+              "Intento de pago fallido en Mercado Pago (no terminal).",
+            );
+            break;
+
+          default:
+            // Pending / in_process / etc. is not terminal — a later notification
+            // (or reconciliation) resolves it. No mutation.
+            logger.debug(
+              { eventId: event.id, orderId, status },
+              "Pago de Mercado Pago no terminal.",
+            );
+        }
+      }
+    }
+  } catch (error) {
+    await ProcessedWebhookEvent.deleteOne({ eventId: event.id });
+    throw error;
+  }
+  res.status(200).json({ received: true });
+};
+
+export { stripeWebhook, mercadopagoWebhook };

@@ -17,6 +17,8 @@ process.env.APP_URL ??= "http://localhost:3000";
 process.env.MONGO_URI ??= "mongodb://127.0.0.1:27017/placeholder";
 process.env.STRIPE_SECRET_KEY ??= "sk_test_placeholder";
 process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_test_placeholder";
+process.env.MP_ACCESS_TOKEN ??= "TEST-mp-access-token-placeholder-000000000000";
+process.env.MP_WEBHOOK_SECRET ??= "mp-webhook-secret-placeholder-000000000000";
 
 // Replica set (single node) so multi-document transactions work in tests.
 let mongo: MongoMemoryReplSet;

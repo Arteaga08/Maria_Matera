@@ -1,5 +1,5 @@
 import Joi from "joi";
-import { OrderStatus } from "@maria-matera/shared";
+import { OrderStatus, PaymentProvider } from "@maria-matera/shared";
 
 /**
  * Joi schemas for orders. `idempotencyKey` is a client-supplied token that makes
@@ -34,11 +34,19 @@ const couponCode = Joi.string().trim().max(40).messages({
   "string.max": "El código de cupón no es válido.",
 });
 
+const paymentProvider = Joi.string()
+  .valid(...Object.values(PaymentProvider))
+  .default(PaymentProvider.Stripe)
+  .messages({
+    "any.only": "El método de pago no es válido.",
+  });
+
 const createOrderSchema = Joi.object({
   idempotencyKey: idempotencyKey.required(),
   shippingAddressId: objectId("La dirección de envío").required(),
   billingAddressId: objectId("La dirección de facturación").required(),
   couponCode: couponCode.optional(),
+  paymentProvider: paymentProvider.optional(),
 });
 
 const advanceOrderSchema = Joi.object({

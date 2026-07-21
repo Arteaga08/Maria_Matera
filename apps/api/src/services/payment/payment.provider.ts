@@ -1,3 +1,5 @@
+import type { PaymentStatus } from "@maria-matera/shared";
+
 /**
  * Provider-agnostic payment gateway contract.
  *
@@ -28,8 +30,14 @@ interface CreatePaymentIntentResult {
 
 interface RetrievePaymentIntentResult {
   ref: string;
-  /** Raw provider status string (e.g. Stripe: "succeeded", "processing", ...). */
-  status: string;
+  /**
+   * CANONICAL status, aligned to `PaymentStatus` (`pending` / `paid` /
+   * `failed` / `refunded`) — never a raw provider-specific string. Each
+   * adapter maps its own gateway's status vocabulary onto these four values
+   * before returning, so callers (`order.service`) compare against
+   * `PaymentStatus` and stay provider-agnostic.
+   */
+  status: PaymentStatus;
   clientSecret?: string;
 }
 
@@ -51,8 +59,18 @@ interface PaymentProvider {
   /**
    * Verifies the raw request body against the signature header and returns the
    * decoded event. MUST throw if verification fails (the caller responds 400).
+   *
+   * `meta` is OPTIONAL and adapter-specific: Stripe verifies purely from
+   * `rawBody` + `signature` and ignores it; Mercado Pago's HMAC scheme needs
+   * extra fields out of the query string (`x-request-id`, `data.id`) that
+   * don't fit the `(rawBody, signature)` shape, so they are passed here
+   * instead of widening the shared signature for every adapter.
    */
-  constructWebhookEvent(rawBody: Buffer, signature: string | undefined): PaymentWebhookEvent;
+  constructWebhookEvent(
+    rawBody: Buffer,
+    signature: string | undefined,
+    meta?: { requestId?: string; dataId?: string },
+  ): PaymentWebhookEvent;
 }
 
 export type {

@@ -10,6 +10,7 @@
   "packageManager": "pnpm@9.12.0",
   "scripts": {
     "dev:api": "pnpm --filter @maria-matera/api dev",
+    "prepare": "pnpm --filter @maria-matera/shared build",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",

@@ -1,6 +1,6 @@
 import { Router, raw } from "express";
 import { asyncHandler } from "../utils/asyncHandler.js";
-import { stripeWebhook } from "../controllers/webhook.controller.js";
+import { stripeWebhook, mercadopagoWebhook } from "../controllers/webhook.controller.js";
 
 /**
  * Payment webhook routes. Mounted at the very START of `buildApp`, BEFORE
@@ -13,5 +13,6 @@ import { stripeWebhook } from "../controllers/webhook.controller.js";
 const router = Router();
 
 router.post("/stripe", raw({ type: "application/json" }), asyncHandler(stripeWebhook));
+router.post("/mercadopago", raw({ type: "application/json" }), asyncHandler(mercadopagoWebhook));
 
 export { router as webhookRouter };
