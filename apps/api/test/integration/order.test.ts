@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import mongoose from "mongoose";
-import { AdminRole, OrderStatus, PaymentStatus } from "@maria-matera/shared";
+import { AdminRole, Carrier, OrderStatus, PaymentStatus } from "@maria-matera/shared";
 
 /**
  * The Stripe adapter is mocked so checkout's post-transaction PaymentIntent call
@@ -174,6 +174,31 @@ describe("Order routes — checkout", () => {
       .send({ idempotencyKey: "http-idem-xxxx", shippingAddressId: "x", billingAddressId: "y" });
     expect(res.status).toBe(401);
   });
+
+  it("accepts recipientName/phone and stores them on shippingAddress only, plus a unique orderNumber and a default shipping subdocument", async () => {
+    const { agent, addressId } = await readyToCheckout("ordship1@test.com");
+
+    const res = await agent.post("/api/v1/orders").send({
+      idempotencyKey: "http-idem-0008",
+      shippingAddressId: addressId,
+      billingAddressId: addressId,
+      recipientName: "Ana López",
+      phone: "5587654321",
+    });
+
+    expect(res.status).toBe(201);
+    const order = res.body.data.order;
+    expect(order.orderNumber).toMatch(/^MM-[0-9A-F]{12}$/);
+    expect(order.shippingAddress.recipientName).toBe("Ana López");
+    expect(order.shippingAddress.phone).toBe("5587654321");
+    expect(order.billingAddress.recipientName).toBeUndefined();
+    expect(order.billingAddress.phone).toBeUndefined();
+    // Mongoose's default `minimize: true` strips an all-empty embedded
+    // subdocument from JSON output, so an unset `shipping` is absent here even
+    // though it is always a real subdocument instance in-memory (see the
+    // model-level assertion in order.service.test.ts).
+    expect(order.shipping ?? {}).toEqual({});
+  });
 });
 
 describe("Order routes — owner reads (anti-IDOR)", () => {
@@ -300,5 +325,68 @@ describe("Order routes — admin", () => {
     const admin = await adminAgent();
     const res = await admin.post(`/api/v1/admin/orders/${orderId}/refund`).send({});
     expect(res.status).toBe(400);
+  });
+
+  it("reverting a shipped order to processing via the status endpoint clears the shipping data", async () => {
+    const { agent, addressId } = await readyToCheckout("ordadmin5@test.com");
+    const created = await agent.post("/api/v1/orders").send({
+      idempotencyKey: "http-idem-0008",
+      shippingAddressId: addressId,
+      billingAddressId: addressId,
+    });
+    const orderId = created.body.data.order._id as string;
+
+    // Put the order in `shipped` with real shipment data (markPaid/ship HTTP
+    // wiring is out of scope here — set the state directly, like the refund test).
+    await Order.updateOne(
+      { _id: orderId },
+      {
+        status: OrderStatus.Shipped,
+        "shipping.carrier": Carrier.Dhl,
+        "shipping.trackingNumber": "TRACK-HTTP-1",
+        "shipping.shippedAt": new Date(),
+      },
+    );
+
+    const admin = await adminAgent();
+    const reverted = await admin
+      .patch(`/api/v1/admin/orders/${orderId}/status`)
+      .send({ status: OrderStatus.Processing, reason: "Guía cancelada" });
+    expect(reverted.status).toBe(200);
+    expect(reverted.body.data.order.status).toBe(OrderStatus.Processing);
+
+    // Re-fetch from the DB: the stale shipment data must be gone.
+    const order = await Order.findById(orderId);
+    expect(order!.status).toBe(OrderStatus.Processing);
+    expect(order!.shipping.carrier).toBeUndefined();
+    expect(order!.shipping.trackingNumber).toBeUndefined();
+    expect(order!.shipping.shippedAt).toBeUndefined();
+  });
+
+  it("a normal paid → processing transition via the status endpoint still works (no shipping side effects)", async () => {
+    const { agent, addressId } = await readyToCheckout("ordadmin6@test.com");
+    const created = await agent.post("/api/v1/orders").send({
+      idempotencyKey: "http-idem-0009",
+      shippingAddressId: addressId,
+      billingAddressId: addressId,
+    });
+    const orderId = created.body.data.order._id as string;
+    await Order.updateOne(
+      { _id: orderId },
+      { status: OrderStatus.Paid, "payment.status": PaymentStatus.Paid },
+    );
+
+    const admin = await adminAgent();
+    const processing = await admin
+      .patch(`/api/v1/admin/orders/${orderId}/status`)
+      .send({ status: OrderStatus.Processing });
+    expect(processing.status).toBe(200);
+    expect(processing.body.data.order.status).toBe(OrderStatus.Processing);
+
+    // Shipping was empty before and stays empty (the null patch is a harmless no-op).
+    const order = await Order.findById(orderId);
+    expect(order!.shipping.carrier).toBeUndefined();
+    expect(order!.shipping.trackingNumber).toBeUndefined();
+    expect(order!.shipping.shippedAt).toBeUndefined();
   });
 });

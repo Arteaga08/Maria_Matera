@@ -89,6 +89,15 @@ const SubscriberStatus = {
 } as const;
 type SubscriberStatus = (typeof SubscriberStatus)[keyof typeof SubscriberStatus];
 
+const Carrier = {
+  Dhl: "dhl",
+  FedEx: "fedex",
+  Estafeta: "estafeta",
+  Ups: "ups",
+  Other: "other",
+} as const;
+type Carrier = (typeof Carrier)[keyof typeof Carrier];
+
 export {
   ProductCategory,
   OrderStatus,
@@ -102,4 +111,5 @@ export {
   TokenType,
   CouponType,
   SubscriberStatus,
+  Carrier,
 };

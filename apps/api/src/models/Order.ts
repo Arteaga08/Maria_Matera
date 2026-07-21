@@ -1,5 +1,6 @@
 import { Schema, model, models, type Document, type Model, type Types } from "mongoose";
 import {
+  Carrier,
   Currency,
   OrderStatus,
   PaymentProvider,
@@ -30,6 +31,11 @@ interface OrderAddressSnapshot {
   rfc?: string;
   cfdiUse?: string;
   taxRegime?: string;
+  // Shipping-label contact, typed at checkout time — not part of the customer's
+  // saved address book (see `Customer.addresses`). Left unset on the billing
+  // snapshot.
+  recipientName?: string;
+  phone?: string;
 }
 
 interface OrderItemSnapshot {
@@ -56,8 +62,19 @@ interface OrderStatusHistoryEntry {
   at: Date;
 }
 
+// If you add a field here, also update the manual reset in `applyTransition`
+// (order.service.ts) that clears every field for the `shippingPatch === null`
+// (shipment-revert) case — it enumerates these fields by hand.
+interface OrderShipping {
+  carrier?: Carrier;
+  trackingNumber?: string;
+  shippedAt?: Date;
+  deliveredAt?: Date;
+}
+
 interface OrderDocument extends Document {
   customerId: Types.ObjectId;
+  orderNumber: string;
   items: OrderItemSnapshot[];
   shippingAddress: OrderAddressSnapshot;
   billingAddress: OrderAddressSnapshot;
@@ -70,6 +87,7 @@ interface OrderDocument extends Document {
   status: OrderStatus;
   statusHistory: OrderStatusHistoryEntry[];
   payment: OrderPayment;
+  shipping: OrderShipping;
   idempotencyKey: string;
   reservationId: Types.ObjectId;
   reservationExpiresAt: Date;
@@ -88,6 +106,8 @@ const orderAddressSchema = new Schema<OrderAddressSnapshot>(
     rfc: { type: String },
     cfdiUse: { type: String },
     taxRegime: { type: String },
+    recipientName: { type: String },
+    phone: { type: String },
   },
   { _id: false },
 );
@@ -118,6 +138,16 @@ const orderPaymentSchema = new Schema<OrderPayment>(
   { _id: false },
 );
 
+const orderShippingSchema = new Schema<OrderShipping>(
+  {
+    carrier: { type: String, enum: Object.values(Carrier) },
+    trackingNumber: { type: String },
+    shippedAt: { type: Date },
+    deliveredAt: { type: Date },
+  },
+  { _id: false },
+);
+
 const statusHistorySchema = new Schema<OrderStatusHistoryEntry>(
   {
     from: { type: String, enum: Object.values(OrderStatus), required: true },
@@ -137,6 +167,7 @@ const orderSchema = new Schema<OrderDocument>(
       required: true,
       index: true,
     },
+    orderNumber: { type: String, required: true, unique: true },
     items: { type: [orderItemSchema], required: true },
     shippingAddress: { type: orderAddressSchema, required: true },
     billingAddress: { type: orderAddressSchema, required: true },
@@ -154,6 +185,7 @@ const orderSchema = new Schema<OrderDocument>(
     },
     statusHistory: { type: [statusHistorySchema], default: [] },
     payment: { type: orderPaymentSchema, required: true },
+    shipping: { type: orderShippingSchema, default: {} },
     idempotencyKey: { type: String, required: true },
     reservationId: { type: Schema.Types.ObjectId, ref: "StockReservation", required: true },
     reservationExpiresAt: { type: Date, required: true },
@@ -166,6 +198,9 @@ const orderSchema = new Schema<OrderDocument>(
 orderSchema.index({ customerId: 1, idempotencyKey: 1 }, { unique: true });
 // Backs `listMine` (newest first) and admin listing.
 orderSchema.index({ customerId: 1, createdAt: -1 });
+// Sparse: most orders have no tracking number yet. Backs the public tracking
+// lookup (GET /api/v1/tracking/:trackingNumber).
+orderSchema.index({ "shipping.trackingNumber": 1 }, { sparse: true });
 
 const Order: Model<OrderDocument> =
   (models.Order as Model<OrderDocument>) ?? model<OrderDocument>("Order", orderSchema);
@@ -176,5 +211,6 @@ export type {
   OrderItemSnapshot,
   OrderPayment,
   OrderStatusHistoryEntry,
+  OrderShipping,
 };
 export { Order };

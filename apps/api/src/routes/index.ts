@@ -12,6 +12,7 @@ import { addressRouter } from "./address.routes.js";
 import { cartRouter } from "./cart.routes.js";
 import { orderRouter } from "./order.routes.js";
 import { adminOrderRouter } from "./admin.order.routes.js";
+import { shippingAdminRouter, shippingPublicRouter } from "./shipping.routes.js";
 
 /**
  * API v1 router aggregator. Feature routers (auth, catalog, ...) are mounted
@@ -38,6 +39,7 @@ apiRouter.use("/newsletter", newsletterPublicRouter);
 apiRouter.use("/addresses", addressRouter);
 apiRouter.use("/cart", cartRouter);
 apiRouter.use("/orders", orderRouter);
+apiRouter.use("/tracking", shippingPublicRouter);
 
 // Catalog — admin
 apiRouter.use("/admin/categories", categoryAdminRouter);
@@ -48,5 +50,6 @@ apiRouter.use("/admin/media", mediaAdminRouter);
 apiRouter.use("/admin/coupons", couponAdminRouter);
 apiRouter.use("/admin/marketing", marketingAdminRouter);
 apiRouter.use("/admin/orders", adminOrderRouter);
+apiRouter.use("/admin/shipping", shippingAdminRouter);
 
 export { apiRouter };
