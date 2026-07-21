@@ -9,9 +9,15 @@ import {
 } from "@maria-matera/shared";
 import { logger } from "../config/logger.js";
 import { Customer } from "../models/Customer.js";
-import { Order, type OrderAddressSnapshot, type OrderDocument } from "../models/Order.js";
+import {
+  Order,
+  type OrderAddressSnapshot,
+  type OrderDocument,
+  type OrderShipping,
+} from "../models/Order.js";
 import { StockReservation } from "../models/StockReservation.js";
 import { AppError } from "../utils/AppError.js";
+import { generateOrderNumber } from "../utils/orderNumber.js";
 import * as cartService from "./cart.service.js";
 import * as couponService from "./coupon.service.js";
 import * as inventoryService from "./inventory.service.js";
@@ -35,6 +41,10 @@ interface CreateOrderInput {
   billingAddressId: string;
   couponCode?: string;
   paymentProvider?: PaymentProvider;
+  // Shipping-label contact, typed at checkout — merged into the shipping
+  // address snapshot only (never the billing snapshot).
+  recipientName?: string;
+  phone?: string;
 }
 
 /**
@@ -42,12 +52,19 @@ interface CreateOrderInput {
  * explicit cancel/refund branches. Terminal states (`cancelled`, `refunded`)
  * allow no further transition. This is the single source of truth every
  * transition helper validates against.
+ *
+ * ONE deliberate backward branch exists: `shipped → processing`, a fulfilment
+ * *correction* for when a shipment must be undone (the carrier lost the package
+ * before it moved, or an admin fat-fingered the guide) so the shipping data can
+ * be cleared and re-entered. It is an explicit, approved exception — NOT a
+ * general state-machine backdoor: no other backward transition exists, and in
+ * particular `delivered` still reverts to nothing (only `refunded`).
  */
 const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   [OrderStatus.PendingPayment]: [OrderStatus.Paid, OrderStatus.Cancelled],
   [OrderStatus.Paid]: [OrderStatus.Processing, OrderStatus.Cancelled, OrderStatus.Refunded],
   [OrderStatus.Processing]: [OrderStatus.Shipped, OrderStatus.Cancelled, OrderStatus.Refunded],
-  [OrderStatus.Shipped]: [OrderStatus.Delivered, OrderStatus.Refunded],
+  [OrderStatus.Shipped]: [OrderStatus.Delivered, OrderStatus.Refunded, OrderStatus.Processing],
   [OrderStatus.Delivered]: [OrderStatus.Refunded],
   [OrderStatus.Cancelled]: [],
   [OrderStatus.Refunded]: [],
@@ -162,7 +179,11 @@ const createOrder = async (
   if (!billing) {
     throw new AppError("La dirección de facturación no existe o no te pertenece.", 404);
   }
-  const shippingSnapshot = snapshotAddress(shipping);
+  const shippingSnapshot = {
+    ...snapshotAddress(shipping),
+    ...(input.recipientName ? { recipientName: input.recipientName } : {}),
+    ...(input.phone ? { phone: input.phone } : {}),
+  };
   const billingSnapshot = snapshotAddress(billing);
 
   // 2. Recompute pricing server-side (never trust client prices).
@@ -248,6 +269,7 @@ const createOrder = async (
         [
           {
             customerId: new Types.ObjectId(customerId),
+            orderNumber: generateOrderNumber(),
             items: orderItems,
             shippingAddress: shippingSnapshot,
             billingAddress: billingSnapshot,
@@ -362,9 +384,26 @@ const applyTransition = async (
   to: OrderStatus,
   by: string,
   reason?: string,
+  shippingPatch?: Partial<OrderShipping> | null,
 ): Promise<OrderDocument> => {
   const from = order.status;
   assertTransition(from, to);
+
+  // Optional shipping-subdocument mutation, applied ONLY after the transition is
+  // validated (so an illegal transition never leaves a dirty document) and
+  // BEFORE the history push / save below — it therefore rides along in whichever
+  // single save path already runs for this transition (never an extra write):
+  //   - `undefined` (every payment/webhook/reconciliation caller): no-op.
+  //   - an object: partial merge onto the subdocument, other fields untouched.
+  //   - explicit `null`: reset all four shipping fields (fulfilment revert).
+  if (shippingPatch === null) {
+    order.shipping.carrier = undefined;
+    order.shipping.trackingNumber = undefined;
+    order.shipping.shippedAt = undefined;
+    order.shipping.deliveredAt = undefined;
+  } else if (shippingPatch) {
+    Object.assign(order.shipping, shippingPatch);
+  }
 
   if (to === OrderStatus.Paid) {
     order.payment.status = PaymentStatus.Paid;
@@ -429,6 +468,7 @@ const advance = async (
   to: OrderStatus,
   by: string,
   reason?: string,
+  shippingPatch?: Partial<OrderShipping> | null,
 ): Promise<OrderDocument> => {
   // `markPaid` and `refund` are the dedicated entry points for those states
   // (they carry payment side effects); `advance` drives the fulfilment path
@@ -440,7 +480,7 @@ const advance = async (
     throw new AppError("Usa el reembolso para esta transición.", 400);
   }
   const order = await getByIdOrThrow(orderId);
-  return applyTransition(order, to, by, reason);
+  return applyTransition(order, to, by, reason, shippingPatch);
 };
 
 const cancel = async (orderId: string, reason: string, by: string): Promise<OrderDocument> => {
@@ -626,7 +666,8 @@ const adminAdvance = (
   to: OrderStatus,
   by: string,
   reason?: string,
-): Promise<OrderDocument> => advance(orderId, to, by, reason);
+  shippingPatch?: Partial<OrderShipping> | null,
+): Promise<OrderDocument> => advance(orderId, to, by, reason, shippingPatch);
 
 const adminRefund = (orderId: string, reason: string, by: string): Promise<OrderDocument> =>
   refund(orderId, reason, by);

@@ -41,12 +41,22 @@ const paymentProvider = Joi.string()
     "any.only": "El método de pago no es válido.",
   });
 
+const recipientName = Joi.string().trim().max(100).messages({
+  "string.max": "El nombre del destinatario no puede exceder 100 caracteres.",
+});
+
+const phone = Joi.string().trim().max(20).messages({
+  "string.max": "El teléfono no es válido.",
+});
+
 const createOrderSchema = Joi.object({
   idempotencyKey: idempotencyKey.required(),
   shippingAddressId: objectId("La dirección de envío").required(),
   billingAddressId: objectId("La dirección de facturación").required(),
   couponCode: couponCode.optional(),
   paymentProvider: paymentProvider.optional(),
+  recipientName: recipientName.optional(),
+  phone: phone.optional(),
 });
 
 const advanceOrderSchema = Joi.object({

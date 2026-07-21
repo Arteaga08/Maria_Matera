@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import mongoose from "mongoose";
 import {
+  Carrier,
   CouponType,
   CustomerTier,
   OrderStatus,
@@ -155,6 +156,10 @@ describe("Order service — createOrder", () => {
     expect(order.payment.ref).toMatch(/^pi_mock_/);
     expect(order.shippingAddress.label).toBe("Envío");
     expect(order.billingAddress.label).toBe("Facturación");
+    // Milestone 7 Task 1: human-facing order number + shipping subdocument.
+    expect(order.orderNumber).toMatch(/^MM-[0-9A-F]{12}$/);
+    expect(order.shipping.carrier).toBeUndefined();
+    expect(order.shipping.trackingNumber).toBeUndefined();
 
     // Reservation created, linked back to the order, stock held.
     const reservation = await StockReservation.findById(order.reservationId);
@@ -422,6 +427,69 @@ describe("Order service — createOrder", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("assigns each order a unique orderNumber", async () => {
+    // Two distinct customers/carts: the `carts` collection has a unique index
+    // on `customerId`, so reusing one customer's cart across two orders in the
+    // same test would require re-seeding the SAME cart document rather than
+    // creating a second one.
+    const a = await makeCustomer();
+    const { product: productA, variant: variantA } = await makeProduct(100000, 10);
+    await seedCart(a.customerId, [{ product: productA, variant: variantA, qty: 1 }]);
+    const { order: orderA } = await orderService.createOrder(a.customerId, {
+      idempotencyKey: "key-ordernum-a",
+      shippingAddressId: a.shippingAddressId,
+      billingAddressId: a.billingAddressId,
+    });
+
+    const b = await makeCustomer();
+    const { product: productB, variant: variantB } = await makeProduct(100000, 10);
+    await seedCart(b.customerId, [{ product: productB, variant: variantB, qty: 1 }]);
+    const { order: orderB } = await orderService.createOrder(b.customerId, {
+      idempotencyKey: "key-ordernum-b",
+      shippingAddressId: b.shippingAddressId,
+      billingAddressId: b.billingAddressId,
+    });
+
+    expect(orderA.orderNumber).toMatch(/^MM-[0-9A-F]{12}$/);
+    expect(orderB.orderNumber).toMatch(/^MM-[0-9A-F]{12}$/);
+    expect(orderA.orderNumber).not.toBe(orderB.orderNumber);
+  });
+
+  it("stores recipientName/phone on the shipping snapshot only, never the billing snapshot", async () => {
+    const { customerId, shippingAddressId, billingAddressId } = await makeCustomer();
+    const { product, variant } = await makeProduct(100000, 10);
+    await seedCart(customerId, [{ product, variant, qty: 1 }]);
+
+    const { order } = await orderService.createOrder(customerId, {
+      idempotencyKey: "key-recipient-1",
+      shippingAddressId,
+      billingAddressId,
+      recipientName: "Juan Pérez",
+      phone: "5512345678",
+    });
+
+    expect(order.shippingAddress.recipientName).toBe("Juan Pérez");
+    expect(order.shippingAddress.phone).toBe("5512345678");
+    expect(order.billingAddress.recipientName).toBeUndefined();
+    expect(order.billingAddress.phone).toBeUndefined();
+  });
+
+  it("checkout without recipientName/phone still works and leaves them unset (backward compatible)", async () => {
+    const { customerId, shippingAddressId, billingAddressId } = await makeCustomer();
+    const { product, variant } = await makeProduct(100000, 10);
+    await seedCart(customerId, [{ product, variant, qty: 1 }]);
+
+    const { order } = await orderService.createOrder(customerId, {
+      idempotencyKey: "key-no-recipient-1",
+      shippingAddressId,
+      billingAddressId,
+    });
+
+    expect(order.status).toBe(OrderStatus.PendingPayment);
+    expect(order.shippingAddress.recipientName).toBeUndefined();
+    expect(order.shippingAddress.phone).toBeUndefined();
+  });
 });
 
 describe("Order service — reads (anti-IDOR)", () => {
@@ -519,5 +587,158 @@ describe("Order service — status transitions", () => {
     await expect(
       orderService.advance(order.id, OrderStatus.Processing, "admin-1"),
     ).rejects.toThrow(/no permitida/i);
+  });
+});
+
+describe("Order service — shipment transitions & shipping patch (Milestone 7)", () => {
+  const seedOrder = async (key: string) => {
+    const { customerId, shippingAddressId, billingAddressId } = await makeCustomer();
+    const { product, variant } = await makeProduct(100000, 10);
+    await seedCart(customerId, [{ product, variant, qty: 2 }]);
+    const { order } = await orderService.createOrder(customerId, {
+      idempotencyKey: key,
+      shippingAddressId,
+      billingAddressId,
+    });
+    return { order, variant };
+  };
+
+  /** Drives a fresh order all the way to `shipped`, stamping shipping fields. */
+  const seedShippedOrder = async (key: string) => {
+    const { order, variant } = await seedOrder(key);
+    await orderService.markPaid(order.id, "admin-1");
+    await orderService.advance(order.id, OrderStatus.Processing, "admin-1");
+    const shipped = await orderService.advance(order.id, OrderStatus.Shipped, "admin-1", undefined, {
+      carrier: Carrier.Dhl,
+      trackingNumber: "TRACK-123",
+      shippedAt: new Date(),
+    });
+    return { order: shipped, variant };
+  };
+
+  it("allows the explicit Shipped → Processing revert branch (previously a 409)", async () => {
+    const { order } = await seedShippedOrder("key-ship-revert-1");
+    expect(order.status).toBe(OrderStatus.Shipped);
+
+    const reverted = await orderService.advance(order.id, OrderStatus.Processing, "admin-1");
+    expect(reverted.status).toBe(OrderStatus.Processing);
+  });
+
+  it("still allows Shipped → Delivered (regression)", async () => {
+    const { order } = await seedShippedOrder("key-ship-delivered-1");
+    const delivered = await orderService.advance(order.id, OrderStatus.Delivered, "admin-1");
+    expect(delivered.status).toBe(OrderStatus.Delivered);
+  });
+
+  it("still allows Shipped → Refunded via the refund path (regression)", async () => {
+    const { order } = await seedShippedOrder("key-ship-refunded-1");
+    const refunded = await orderService.refund(order.id, "Paquete dañado", "admin-1");
+    expect(refunded.status).toBe(OrderStatus.Refunded);
+    expect(refunded.payment.status).toBe(PaymentStatus.Refunded);
+  });
+
+  it("keeps Delivered terminal-except-refund: Delivered → Processing still throws", async () => {
+    const { order } = await seedShippedOrder("key-ship-delivered-terminal-1");
+    await orderService.advance(order.id, OrderStatus.Delivered, "admin-1");
+    await expect(
+      orderService.advance(order.id, OrderStatus.Processing, "admin-1"),
+    ).rejects.toThrow(/no permitida/i);
+  });
+
+  it("persists BOTH the new status AND the shipping fields in one write (object patch)", async () => {
+    const { order } = await seedOrder("key-ship-patch-1");
+    await orderService.markPaid(order.id, "admin-1");
+    await orderService.advance(order.id, OrderStatus.Processing, "admin-1");
+
+    const shippedAt = new Date();
+    await orderService.advance(order.id, OrderStatus.Shipped, "admin-1", "guía generada", {
+      carrier: Carrier.FedEx,
+      trackingNumber: "FDX-999",
+      shippedAt,
+    });
+
+    // Re-fetch from the DB: proves status + shipping landed together, one write.
+    const reloaded = await Order.findById(order.id);
+    expect(reloaded!.status).toBe(OrderStatus.Shipped);
+    expect(reloaded!.shipping.carrier).toBe(Carrier.FedEx);
+    expect(reloaded!.shipping.trackingNumber).toBe("FDX-999");
+    expect(reloaded!.shipping.shippedAt!.getTime()).toBe(shippedAt.getTime());
+    const last = reloaded!.statusHistory[reloaded!.statusHistory.length - 1]!;
+    expect(last.to).toBe(OrderStatus.Shipped);
+    expect(last.reason).toBe("guía generada");
+  });
+
+  it("resets order.shipping when reverting Shipped → Processing with a null patch", async () => {
+    const { order } = await seedShippedOrder("key-ship-null-1");
+    // Precondition: shipping fields were set on the way to `shipped`.
+    expect(order.shipping.carrier).toBe(Carrier.Dhl);
+
+    const reverted = await orderService.advance(
+      order.id,
+      OrderStatus.Processing,
+      "admin-1",
+      "carrier perdió el paquete",
+      null,
+    );
+    expect(reverted.status).toBe(OrderStatus.Processing);
+
+    const reloaded = await Order.findById(order.id);
+    expect(reloaded!.status).toBe(OrderStatus.Processing);
+    expect(reloaded!.shipping.carrier).toBeUndefined();
+    expect(reloaded!.shipping.trackingNumber).toBeUndefined();
+    expect(reloaded!.shipping.shippedAt).toBeUndefined();
+    expect(reloaded!.shipping.deliveredAt).toBeUndefined();
+    const last = reloaded!.statusHistory[reloaded!.statusHistory.length - 1]!;
+    expect(last.from).toBe(OrderStatus.Shipped);
+    expect(last.to).toBe(OrderStatus.Processing);
+    expect(last.reason).toBe("carrier perdió el paquete");
+  });
+
+  it("leaves order.shipping untouched when advance is called without a shipping patch", async () => {
+    const { order } = await seedShippedOrder("key-ship-untouched-1");
+    // A plain advance (no 5th arg) to delivered must not disturb existing shipping.
+    await orderService.advance(order.id, OrderStatus.Delivered, "admin-1");
+
+    const reloaded = await Order.findById(order.id);
+    expect(reloaded!.status).toBe(OrderStatus.Delivered);
+    expect(reloaded!.shipping.carrier).toBe(Carrier.Dhl);
+    expect(reloaded!.shipping.trackingNumber).toBe("TRACK-123");
+    expect(reloaded!.shipping.shippedAt).toBeInstanceOf(Date);
+  });
+
+  it("threads the shipping patch through adminAdvance identically to advance", async () => {
+    const { order } = await seedOrder("key-ship-admin-1");
+    await orderService.markPaid(order.id, "admin-1");
+    await orderService.advance(order.id, OrderStatus.Processing, "admin-1");
+
+    await orderService.adminAdvance(order.id, OrderStatus.Shipped, "admin-1", undefined, {
+      carrier: Carrier.Estafeta,
+      trackingNumber: "EST-555",
+    });
+
+    const reloaded = await Order.findById(order.id);
+    expect(reloaded!.status).toBe(OrderStatus.Shipped);
+    expect(reloaded!.shipping.carrier).toBe(Carrier.Estafeta);
+    expect(reloaded!.shipping.trackingNumber).toBe("EST-555");
+  });
+
+  it("does NOT persist the shipping patch when the transition itself is illegal (assert-before-patch)", async () => {
+    const { order } = await seedOrder("key-ship-illegal-1");
+    await orderService.markPaid(order.id, "admin-1");
+    await orderService.advance(order.id, OrderStatus.Processing, "admin-1");
+
+    // Illegal: processing → delivered (must skip shipped). Even with a patch,
+    // it throws 409 and nothing about shipping is saved.
+    await expect(
+      orderService.advance(order.id, OrderStatus.Delivered, "admin-1", undefined, {
+        carrier: Carrier.Ups,
+        trackingNumber: "UPS-000",
+      }),
+    ).rejects.toThrow(/no permitida/i);
+
+    const reloaded = await Order.findById(order.id);
+    expect(reloaded!.status).toBe(OrderStatus.Processing);
+    expect(reloaded!.shipping.carrier).toBeUndefined();
+    expect(reloaded!.shipping.trackingNumber).toBeUndefined();
   });
 });

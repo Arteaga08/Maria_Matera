@@ -1,3 +1,4 @@
+import type { Carrier } from "@maria-matera/shared";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { isEmailConfigured, getTransporter } from "../config/email.js";
@@ -14,11 +15,19 @@ interface CouponEmailData {
   description: string;
 }
 
+interface ShippedEmailData {
+  orderNumber: string;
+  carrier: Carrier;
+  trackingNumber: string;
+  trackingUrl?: string;
+}
+
 interface EmailService {
   sendVerificationEmail(to: string, verifyUrl: string): Promise<void>;
   sendPasswordResetEmail(to: string, resetUrl: string): Promise<void>;
   sendSubscriptionConfirmation(to: string, confirmUrl: string): Promise<void>;
   sendCouponEmail(to: string, coupon: CouponEmailData, unsubscribeUrl: string): Promise<void>;
+  sendShippedEmail(to: string, data: ShippedEmailData): Promise<void>;
 }
 
 const send = async (to: string, subject: string, html: string): Promise<void> => {
@@ -67,7 +76,21 @@ const emailService: EmailService = {
          <a href="${unsubscribeUrl}">Darte de baja</a>.
        </p>`,
     ),
+
+  sendShippedEmail: (to, data) =>
+    send(
+      to,
+      `Tu pedido ${data.orderNumber} ya va en camino`,
+      `<p>¡Buenas noticias! Tu pedido <strong>${data.orderNumber}</strong> ya fue enviado.</p>
+       <p>Paquetería: <strong>${data.carrier.toUpperCase()}</strong></p>
+       <p>Número de guía: <strong>${data.trackingNumber}</strong></p>
+       ${
+         data.trackingUrl
+           ? `<p><a href="${data.trackingUrl}">Rastrear mi pedido</a></p>`
+           : ""
+       }`,
+    ),
 };
 
-export type { EmailService, CouponEmailData };
+export type { EmailService, CouponEmailData, ShippedEmailData };
 export { emailService };

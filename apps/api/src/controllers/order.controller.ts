@@ -1,4 +1,4 @@
-import type { OrderStatus } from "@maria-matera/shared";
+import { OrderStatus } from "@maria-matera/shared";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { sendResponse } from "../utils/sendResponse.js";
 import { getActor } from "../utils/actor.js";
@@ -45,11 +45,20 @@ const adminGet = asyncHandler(async (req, res) => {
 });
 
 const adminAdvance = asyncHandler(async (req, res) => {
+  const to = req.body.status as OrderStatus;
+  // Any transition INTO `processing` clears the shipping subdocument. This is a
+  // no-op for the normal `paid → processing` start (shipping is still empty),
+  // and the necessary cleanup for the `shipped → processing` revert branch: it
+  // wipes the now-stale carrier/trackingNumber/shippedAt of the undone shipment
+  // (including the sparse-indexed trackingNumber). Unconditional by target
+  // status, so no extra DB lookup of the current status is needed.
+  const shippingPatch = to === OrderStatus.Processing ? null : undefined;
   const order = await orderService.adminAdvance(
     req.params.orderId as string,
-    req.body.status as OrderStatus,
+    to,
     getActor(req).id,
     req.body.reason as string | undefined,
+    shippingPatch,
   );
   sendResponse({ res, message: "Estado de la orden actualizado.", data: { order } });
 });
