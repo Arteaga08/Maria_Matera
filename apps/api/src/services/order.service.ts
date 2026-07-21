@@ -16,7 +16,7 @@ import * as cartService from "./cart.service.js";
 import * as couponService from "./coupon.service.js";
 import * as inventoryService from "./inventory.service.js";
 import { notifyOwner } from "./notification/telegram.js";
-import { stripeProvider } from "./payment/stripe.provider.js";
+import { getPaymentProvider } from "./payment/index.js";
 
 /**
  * Order lifecycle — the critical, money-and-inventory module of the checkout.
@@ -34,6 +34,7 @@ interface CreateOrderInput {
   shippingAddressId: string;
   billingAddressId: string;
   couponCode?: string;
+  paymentProvider?: PaymentProvider;
 }
 
 /**
@@ -114,12 +115,14 @@ interface CreateOrderResult {
  * network retry for THIS order reuses the same intent with zero collision risk.
  */
 const finalizePayment = async (order: OrderDocument): Promise<CreateOrderResult> => {
+  const provider = getPaymentProvider(order.payment.provider);
+
   if (order.payment.ref) {
-    const intent = await stripeProvider.retrievePaymentIntent(order.payment.ref);
+    const intent = await provider.retrievePaymentIntent(order.payment.ref);
     return { order, clientSecret: intent.clientSecret ?? "" };
   }
 
-  const { ref, clientSecret } = await stripeProvider.createPaymentIntent({
+  const { ref, clientSecret } = await provider.createPaymentIntent({
     amountCents: order.totalCents,
     currency: order.currency,
     metadata: { orderId: order.id as string },
@@ -256,7 +259,10 @@ const createOrder = async (
             currency: Currency.Mxn,
             status: OrderStatus.PendingPayment,
             statusHistory: [],
-            payment: { provider: PaymentProvider.Stripe, status: PaymentStatus.Pending },
+            payment: {
+              provider: input.paymentProvider ?? PaymentProvider.Stripe,
+              status: PaymentStatus.Pending,
+            },
             idempotencyKey: input.idempotencyKey,
             reservationId: reservation._id,
             reservationExpiresAt: reservation.expiresAt,
@@ -453,7 +459,8 @@ const cancel = async (orderId: string, reason: string, by: string): Promise<Orde
 const refund = async (orderId: string, reason: string, by: string): Promise<OrderDocument> => {
   const order = await getByIdOrThrow(orderId);
   if (order.payment.ref) {
-    await stripeProvider.refund(order.payment.ref);
+    const provider = getPaymentProvider(order.payment.provider);
+    await provider.refund(order.payment.ref);
   }
   return applyTransition(order, OrderStatus.Refunded, by, reason);
 };
@@ -504,17 +511,24 @@ const findByPaymentRef = (paymentRef: string): Promise<OrderDocument | null> =>
   Order.findOne({ "payment.ref": paymentRef });
 
 /** Webhook `payment_intent.succeeded` → mark paid + commit stock. */
-const markPaidByPaymentRef = async (paymentRef: string): Promise<void> => {
+const markPaidByPaymentRef = async (
+  paymentRef: string,
+  actor: string = WEBHOOK_ACTOR,
+): Promise<void> => {
   const order = await findByPaymentRef(paymentRef);
   if (!order) {
     logger.warn({ paymentRef }, "Webhook de pago sin orden correlacionada (succeeded).");
     return;
   }
-  await markPaidInternal(order, WEBHOOK_ACTOR);
+  await markPaidInternal(order, actor);
 };
 
 /** Webhook `payment_intent.payment_failed` / `payment_intent.canceled` → cancel. */
-const cancelByPaymentRef = async (paymentRef: string, reason: string): Promise<void> => {
+const cancelByPaymentRef = async (
+  paymentRef: string,
+  reason: string,
+  actor: string = WEBHOOK_ACTOR,
+): Promise<void> => {
   const order = await findByPaymentRef(paymentRef);
   if (!order) {
     logger.warn({ paymentRef }, "Webhook de pago sin orden correlacionada (failed/canceled).");
@@ -525,7 +539,7 @@ const cancelByPaymentRef = async (paymentRef: string, reason: string): Promise<v
   if (!ALLOWED_TRANSITIONS[order.status].includes(OrderStatus.Cancelled)) {
     return;
   }
-  await applyTransition(order, OrderStatus.Cancelled, WEBHOOK_ACTOR, reason);
+  await applyTransition(order, OrderStatus.Cancelled, actor, reason);
 };
 
 /**
@@ -534,7 +548,11 @@ const cancelByPaymentRef = async (paymentRef: string, reason: string): Promise<v
  * this event fired). Idempotent: an order already `refunded` is skipped, so an
  * admin-initiated refund (which already restocked) is not restocked again.
  */
-const refundByPaymentRef = async (paymentRef: string, reason: string): Promise<void> => {
+const refundByPaymentRef = async (
+  paymentRef: string,
+  reason: string,
+  actor: string = WEBHOOK_ACTOR,
+): Promise<void> => {
   const order = await findByPaymentRef(paymentRef);
   if (!order) {
     logger.warn({ paymentRef }, "Webhook de reembolso sin orden correlacionada.");
@@ -543,7 +561,7 @@ const refundByPaymentRef = async (paymentRef: string, reason: string): Promise<v
   if (!ALLOWED_TRANSITIONS[order.status].includes(OrderStatus.Refunded)) {
     return;
   }
-  await applyTransition(order, OrderStatus.Refunded, WEBHOOK_ACTOR, reason);
+  await applyTransition(order, OrderStatus.Refunded, actor, reason);
 };
 
 /**
@@ -564,8 +582,9 @@ const reconcilePendingOrders = async (): Promise<void> => {
   for (const order of stale) {
     try {
       if (order.payment.ref) {
-        const intent = await stripeProvider.retrievePaymentIntent(order.payment.ref);
-        if (intent.status === "succeeded") {
+        const provider = getPaymentProvider(order.payment.provider);
+        const intent = await provider.retrievePaymentIntent(order.payment.ref);
+        if (intent.status === PaymentStatus.Paid) {
           await markPaidInternal(order, RECONCILE_ACTOR);
           continue;
         }

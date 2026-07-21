@@ -32,6 +32,8 @@ interface Env {
   telegram: { botToken: string; chatId: string };
   stripeSecretKey: string;
   stripeWebhookSecret: string;
+  mercadoPagoAccessToken: string;
+  mercadoPagoWebhookSecret: string;
 }
 
 const fail = (message: string): never => {
@@ -147,6 +149,8 @@ const loadEnv = (): Env => {
     },
     stripeSecretKey: required("STRIPE_SECRET_KEY"),
     stripeWebhookSecret: required("STRIPE_WEBHOOK_SECRET"),
+    mercadoPagoAccessToken: requiredSecret("MP_ACCESS_TOKEN"),
+    mercadoPagoWebhookSecret: requiredSecret("MP_WEBHOOK_SECRET"),
   };
 
   return Object.freeze(env);

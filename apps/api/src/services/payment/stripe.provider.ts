@@ -1,4 +1,5 @@
 import Stripe from "stripe";
+import { PaymentStatus } from "@maria-matera/shared";
 import { env } from "../../config/env.js";
 import { AppError } from "../../utils/AppError.js";
 import type {
@@ -70,12 +71,33 @@ const createPaymentIntent = async (
   }
 };
 
+/**
+ * Maps a raw Stripe PaymentIntent status onto the canonical `PaymentStatus`
+ * every adapter must return (see `RetrievePaymentIntentResult.status`), so
+ * `order.service` never compares against a Stripe-specific literal.
+ */
+const toCanonicalStatus = (stripeStatus: Stripe.PaymentIntent.Status): PaymentStatus => {
+  switch (stripeStatus) {
+    case "succeeded":
+      return PaymentStatus.Paid;
+    case "canceled":
+      return PaymentStatus.Failed;
+    case "processing":
+    case "requires_action":
+    case "requires_confirmation":
+    case "requires_payment_method":
+    case "requires_capture":
+    default:
+      return PaymentStatus.Pending;
+  }
+};
+
 const retrievePaymentIntent = async (ref: string): Promise<RetrievePaymentIntentResult> => {
   try {
     const intent = await stripe.paymentIntents.retrieve(ref);
     return {
       ref: intent.id,
-      status: intent.status,
+      status: toCanonicalStatus(intent.status),
       ...(intent.client_secret ? { clientSecret: intent.client_secret } : {}),
     };
   } catch (error) {
@@ -94,6 +116,9 @@ const refund = async (ref: string): Promise<void> => {
 const constructWebhookEvent = (
   rawBody: Buffer,
   signature: string | undefined,
+  // Stripe verifies purely from `rawBody` + `signature`; `meta` is only
+  // meaningful to the Mercado Pago adapter and is intentionally ignored here.
+  _meta?: { requestId?: string; dataId?: string },
 ): PaymentWebhookEvent => {
   try {
     // Stripe's SDK verifies the signature AND enforces a ~5min timestamp

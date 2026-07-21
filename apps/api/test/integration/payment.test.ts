@@ -259,7 +259,7 @@ describe("Payment — reconciliation backstop", () => {
     );
     stripeMock.retrievePaymentIntent.mockResolvedValue({
       ref: order.payment.ref!,
-      status: "succeeded",
+      status: PaymentStatus.Paid,
     });
 
     await orderService.reconcilePendingOrders();
