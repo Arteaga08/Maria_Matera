@@ -20,6 +20,15 @@ const loginLimiter = createRateLimiter({
   message: "Demasiados intentos. Intenta de nuevo más tarde.",
 });
 
+// `/2fa/enable` and `/2fa/disable` verify a submitted TOTP code — the same
+// brute-forceable shape as `/login` — so they get the same limiter. `/2fa/setup`
+// does not verify a code (it only issues a fresh secret) so it is left unlimited.
+const twoFactorLimiter = createRateLimiter({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: "Demasiados intentos. Intenta de nuevo más tarde.",
+});
+
 router.post("/login", loginLimiter, validate(adminLoginSchema), ctrl.login);
 router.post("/refresh", ctrl.refresh);
 router.post("/logout", ctrl.logout);
@@ -27,7 +36,19 @@ router.get("/me", protect, restrictTo(AdminRole.Admin, AdminRole.Editor), ctrl.m
 
 const adminGuard = [protect, restrictTo(AdminRole.Admin, AdminRole.Editor)] as const;
 router.post("/2fa/setup", ...adminGuard, ctrl.setup2fa);
-router.post("/2fa/enable", ...adminGuard, validate(twoFactorSchema), ctrl.enable2fa);
-router.post("/2fa/disable", ...adminGuard, validate(twoFactorSchema), ctrl.disable2fa);
+router.post(
+  "/2fa/enable",
+  ...adminGuard,
+  twoFactorLimiter,
+  validate(twoFactorSchema),
+  ctrl.enable2fa,
+);
+router.post(
+  "/2fa/disable",
+  ...adminGuard,
+  twoFactorLimiter,
+  validate(twoFactorSchema),
+  ctrl.disable2fa,
+);
 
 export { router as adminAuthRouter };

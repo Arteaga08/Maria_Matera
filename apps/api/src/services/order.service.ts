@@ -6,6 +6,7 @@ import {
   PaymentProvider,
   PaymentStatus,
   ReservationStatus,
+  UserType,
 } from "@maria-matera/shared";
 import { logger } from "../config/logger.js";
 import { Customer } from "../models/Customer.js";
@@ -17,12 +18,14 @@ import {
 } from "../models/Order.js";
 import { StockReservation } from "../models/StockReservation.js";
 import { AppError } from "../utils/AppError.js";
+import type { Actor } from "../utils/actor.js";
 import { generateOrderNumber } from "../utils/orderNumber.js";
 import * as cartService from "./cart.service.js";
 import * as couponService from "./coupon.service.js";
 import * as inventoryService from "./inventory.service.js";
 import { notifyOwner } from "./notification/telegram.js";
 import { getPaymentProvider } from "./payment/index.js";
+import { recordAudit } from "./audit.service.js";
 
 /**
  * Order lifecycle — the critical, money-and-inventory module of the checkout.
@@ -34,6 +37,8 @@ import { getPaymentProvider } from "./payment/index.js";
  * `cartService.getPriced`. Owner-facing reads are always scoped by `customerId`
  * *in the query itself* (anti-IDOR), never a global lookup + app-level check.
  */
+
+const MODULE = "order";
 
 interface CreateOrderInput {
   idempotencyKey: string;
@@ -661,16 +666,53 @@ const adminList = (filters: AdminOrderFilters = {}): Promise<OrderDocument[]> =>
 
 const adminGet = (orderId: string): Promise<OrderDocument> => getByIdOrThrow(orderId);
 
-const adminAdvance = (
+/**
+ * Admin-audited entry points for the direct order-status/refund HTTP routes
+ * (`admin.order.routes.ts`). Delegate to `advance`/`refund` (the shared
+ * state-machine primitives also used by the shipping domain and by the
+ * webhook/reconciliation paths with system actors) and then record a generic
+ * audit entry. Shipping's own admin actions (`assignGuide`, `markDelivered`,
+ * etc.) call `advance` directly instead of these wrappers — they already
+ * record their own richer, domain-specific audit entries, so routing them
+ * through here too would double-audit the same mutation.
+ */
+const adminAdvance = async (
   orderId: string,
   to: OrderStatus,
-  by: string,
+  actor: Actor,
   reason?: string,
   shippingPatch?: Partial<OrderShipping> | null,
-): Promise<OrderDocument> => advance(orderId, to, by, reason, shippingPatch);
+): Promise<OrderDocument> => {
+  const order = await advance(orderId, to, actor.id, reason, shippingPatch);
+  await recordAudit({
+    actorId: actor.id,
+    actorType: UserType.Admin,
+    action: "ADVANCE_ORDER_STATUS",
+    module: MODULE,
+    targetId: orderId,
+    after: { status: to, ...(reason ? { reason } : {}) },
+    ip: actor.ip,
+  });
+  return order;
+};
 
-const adminRefund = (orderId: string, reason: string, by: string): Promise<OrderDocument> =>
-  refund(orderId, reason, by);
+const adminRefund = async (
+  orderId: string,
+  reason: string,
+  actor: Actor,
+): Promise<OrderDocument> => {
+  const order = await refund(orderId, reason, actor.id);
+  await recordAudit({
+    actorId: actor.id,
+    actorType: UserType.Admin,
+    action: "REFUND_ORDER",
+    module: MODULE,
+    targetId: orderId,
+    after: { reason },
+    ip: actor.ip,
+  });
+  return order;
+};
 
 export type { CreateOrderInput, CreateOrderResult, AdminOrderFilters };
 export {

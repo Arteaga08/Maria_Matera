@@ -33,6 +33,7 @@ import { Product } from "../../src/models/Product.js";
 import { ProductVariant } from "../../src/models/ProductVariant.js";
 import { Order } from "../../src/models/Order.js";
 import { StockReservation } from "../../src/models/StockReservation.js";
+import { AuditLog } from "../../src/models/AuditLog.js";
 
 /**
  * Order HTTP routes (Milestone 5, Task 4). Owner endpoints under
@@ -286,6 +287,11 @@ describe("Order routes — admin", () => {
     const order = await Order.findById(orderId);
     const reservation = await StockReservation.findById(order!.reservationId);
     expect(reservation!.status).toBe("released");
+
+    // The status-change endpoint must audit end-to-end (pre-merge M8 hardening).
+    const audit = await AuditLog.findOne({ action: "ADVANCE_ORDER_STATUS", targetId: orderId });
+    expect(audit).not.toBeNull();
+    expect(audit!.module).toBe("order");
   });
 
   it("refunds a paid order via the refund endpoint", async () => {
@@ -310,6 +316,11 @@ describe("Order routes — admin", () => {
     expect(refunded.status).toBe(200);
     expect(refunded.body.data.order.status).toBe(OrderStatus.Refunded);
     expect(refunded.body.data.order.payment.status).toBe(PaymentStatus.Refunded);
+
+    // The refund endpoint must audit end-to-end (pre-merge M8 hardening).
+    const audit = await AuditLog.findOne({ action: "REFUND_ORDER", targetId: orderId });
+    expect(audit).not.toBeNull();
+    expect(audit!.module).toBe("order");
   });
 
   it("rejects a refund with no reason (400)", async () => {
