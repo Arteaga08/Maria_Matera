@@ -32,16 +32,21 @@ const get = asyncHandler(async (req, res) => {
 // --- Admin-facing ------------------------------------------------------------
 
 const adminList = asyncHandler(async (req, res) => {
-  const orders = await orderService.adminList({
-    status: req.query.status as OrderStatus | undefined,
-    customerId: req.query.customerId as string | undefined,
-  });
-  sendResponse({ res, message: "Órdenes.", data: { orders } });
+  const { items, meta } = await orderService.adminList(req.query);
+  sendResponse({ res, message: "Órdenes.", data: { orders: items }, meta });
 });
 
 const adminGet = asyncHandler(async (req, res) => {
-  const order = await orderService.adminGet(req.params.orderId as string);
-  sendResponse({ res, message: "Orden.", data: { order } });
+  const detail = await orderService.adminGetDetail(req.params.orderId as string);
+  sendResponse({ res, message: "Orden.", data: detail });
+});
+
+const adminStats = asyncHandler(async (req, res) => {
+  const stats = await orderService.adminStats({
+    from: req.query.from as string | undefined,
+    to: req.query.to as string | undefined,
+  });
+  sendResponse({ res, message: "Estadísticas de órdenes.", data: { stats } });
 });
 
 const adminAdvance = asyncHandler(async (req, res) => {
@@ -72,4 +77,4 @@ const adminRefund = asyncHandler(async (req, res) => {
   sendResponse({ res, message: "Orden reembolsada.", data: { order } });
 });
 
-export { create, list, get, adminList, adminGet, adminAdvance, adminRefund };
+export { create, list, get, adminList, adminGet, adminStats, adminAdvance, adminRefund };

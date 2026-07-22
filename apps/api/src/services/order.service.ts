@@ -20,6 +20,12 @@ import { StockReservation } from "../models/StockReservation.js";
 import { AppError } from "../utils/AppError.js";
 import type { Actor } from "../utils/actor.js";
 import { generateOrderNumber } from "../utils/orderNumber.js";
+import type { FilterQuery } from "mongoose";
+import type { PaginationMeta } from "@maria-matera/shared";
+import { parseListQuery, buildMeta } from "../utils/listQuery.js";
+import { Product } from "../models/Product.js";
+import { Certificate, type CertificateDocument } from "../models/Certificate.js";
+import { AuditLog, type AuditLogDocument } from "../models/AuditLog.js";
 import * as cartService from "./cart.service.js";
 import * as couponService from "./coupon.service.js";
 import * as inventoryService from "./inventory.service.js";
@@ -40,6 +46,7 @@ import { recordAudit } from "./audit.service.js";
  */
 
 const MODULE = "order";
+const ADMIN_LIST_ALLOWED_SORT = ["createdAt", "totalCents"];
 
 interface CreateOrderInput {
   idempotencyKey: string;
@@ -660,23 +667,341 @@ const reconcilePendingOrders = async (): Promise<void> => {
 
 // --- Admin-facing ------------------------------------------------------------
 
-interface AdminOrderFilters {
-  status?: OrderStatus;
-  customerId?: string;
-}
+const buildCustomerSearchIds = async (search: string): Promise<Types.ObjectId[]> => {
+  const regex = new RegExp(search.trim(), "i");
+  const customers = await Customer.find({
+    $or: [{ name: regex }, { email: regex }],
+  })
+    .select("_id")
+    .exec();
+  return customers.map((c) => c._id as Types.ObjectId);
+};
 
-const adminList = (filters: AdminOrderFilters = {}): Promise<OrderDocument[]> => {
-  const query: Record<string, unknown> = {};
-  if (filters.status) {
-    query.status = filters.status;
+const adminList = async (
+  query: Record<string, unknown>,
+): Promise<{ items: OrderDocument[]; meta: PaginationMeta }> => {
+  const { page, pageSize, skip, sort } = parseListQuery(query, {
+    allowedSort: ADMIN_LIST_ALLOWED_SORT,
+    defaultSort: "-createdAt",
+  });
+
+  const filter: FilterQuery<OrderDocument> = {};
+
+  if (
+    typeof query.status === "string" &&
+    Object.values(OrderStatus).includes(query.status as OrderStatus)
+  ) {
+    filter.status = query.status as OrderStatus;
   }
-  if (filters.customerId) {
-    query.customerId = filters.customerId;
+  if (
+    typeof query.paymentProvider === "string" &&
+    Object.values(PaymentProvider).includes(query.paymentProvider as PaymentProvider)
+  ) {
+    filter["payment.provider"] = query.paymentProvider as PaymentProvider;
   }
-  return Order.find(query).sort({ createdAt: -1 }).exec();
+  const from = typeof query.from === "string" ? new Date(query.from) : undefined;
+  const to = typeof query.to === "string" ? new Date(query.to) : undefined;
+  if ((from && !Number.isNaN(from.getTime())) || (to && !Number.isNaN(to.getTime()))) {
+    filter.createdAt = {
+      ...(from && !Number.isNaN(from.getTime()) ? { $gte: from } : {}),
+      ...(to && !Number.isNaN(to.getTime()) ? { $lte: to } : {}),
+    };
+  }
+  if (query.hasCoupon === "true") {
+    filter.couponCode = { $exists: true, $ne: null };
+  } else if (query.hasCoupon === "false") {
+    filter.$or = [{ couponCode: { $exists: false } }, { couponCode: null }];
+  }
+  if (typeof query.search === "string" && query.search.trim()) {
+    const search = query.search.trim();
+    const customerIds = await buildCustomerSearchIds(search);
+    // Note: `$or` here is safe to combine with the `hasCoupon:false` `$or` above
+    // because Mongo only allows one `$or` key per filter object — if both are
+    // ever active simultaneously, wrap each in `$and` instead. Today's UI only
+    // sends one of {hasCoupon, search} at a time, so this is a documented
+    // known limitation rather than pre-built for a combination that isn't used.
+    filter.$or = [
+      { orderNumber: new RegExp(search, "i") },
+      ...(customerIds.length ? [{ customerId: { $in: customerIds } }] : []),
+    ];
+  }
+
+  const [items, total] = await Promise.all([
+    Order.find(filter).sort(sort).skip(skip).limit(pageSize).exec(),
+    Order.countDocuments(filter),
+  ]);
+  return { items, meta: buildMeta(page, pageSize, total) };
 };
 
 const adminGet = (orderId: string): Promise<OrderDocument> => getByIdOrThrow(orderId);
+
+interface OrderItemWithImage {
+  productId: Types.ObjectId;
+  variantId: Types.ObjectId;
+  sku: string;
+  name: string;
+  qty: number;
+  unitPriceCents: number;
+  lineSubtotalCents: number;
+  image?: string;
+}
+
+interface CustomerOrderSummary {
+  id: string;
+  name: string;
+  email: string;
+  tier: string;
+  previousOrdersCount: number;
+  totalSpentCents: number;
+}
+
+interface OrderDetail {
+  order: Record<string, unknown> & { items: OrderItemWithImage[] };
+  customer: CustomerOrderSummary;
+  certificates: CertificateDocument[];
+  auditLog: AuditLogDocument[];
+}
+
+/**
+ * Order statuses counted as a "realized sale" for lifetime-spend and revenue
+ * purposes: payment landed and the sale was never reversed. `refunded` is
+ * deliberately excluded (the money went back), `cancelled`/`pending_payment`
+ * never became a sale.
+ */
+const REALIZED_SALE_STATUSES: OrderStatus[] = [
+  OrderStatus.Paid,
+  OrderStatus.Processing,
+  OrderStatus.Shipped,
+  OrderStatus.Delivered,
+];
+
+const enrichItemsWithImages = async (order: OrderDocument): Promise<OrderItemWithImage[]> => {
+  const productIds = [...new Set(order.items.map((item) => item.productId.toString()))];
+  const products = await Product.find({ _id: { $in: productIds } })
+    .select("images.cardPrimary")
+    .exec();
+  const imageByProductId = new Map(products.map((p) => [p.id as string, p.images?.cardPrimary]));
+  return order.items.map((item) => ({
+    ...(item as unknown as OrderItemWithImage),
+    image: imageByProductId.get(item.productId.toString()),
+  }));
+};
+
+const getCustomerSummary = async (
+  customerId: Types.ObjectId,
+  excludeOrderId: Types.ObjectId,
+): Promise<CustomerOrderSummary> => {
+  const customer = await Customer.findById(customerId);
+  if (!customer) {
+    throw new AppError("Cliente no encontrado.", 404);
+  }
+  const otherOrders = await Order.find({
+    customerId,
+    _id: { $ne: excludeOrderId },
+    status: { $in: REALIZED_SALE_STATUSES },
+  })
+    .select("totalCents")
+    .exec();
+  return {
+    id: customer.id as string,
+    name: customer.name,
+    email: customer.email,
+    tier: customer.tier,
+    previousOrdersCount: otherOrders.length,
+    totalSpentCents: otherOrders.reduce((sum, o) => sum + o.totalCents, 0),
+  };
+};
+
+const adminGetDetail = async (orderId: string): Promise<OrderDetail> => {
+  const order = await getByIdOrThrow(orderId);
+
+  const [items, customer, certificates, auditLog] = await Promise.all([
+    enrichItemsWithImages(order),
+    getCustomerSummary(order.customerId as Types.ObjectId, order._id as Types.ObjectId),
+    Certificate.find({ orderId: order._id }).sort({ issuedAt: -1 }).exec(),
+    AuditLog.find({ module: MODULE, targetId: orderId }).sort({ createdAt: 1 }).exec(),
+  ]);
+
+  return {
+    order: { ...order.toObject({ virtuals: true }), items },
+    customer,
+    certificates,
+    auditLog,
+  };
+};
+
+interface OrderStatsQuery {
+  from?: string;
+  to?: string;
+}
+
+interface ProviderBreakdownEntry {
+  provider: PaymentProvider;
+  revenueCents: number;
+  orderCount: number;
+}
+
+interface TopProductEntry {
+  productId: string;
+  name: string;
+  unitsSold: number;
+  revenueCents: number;
+}
+
+interface OrderStats {
+  rangeFrom: Date;
+  rangeTo: Date;
+  revenueCents: number;
+  previousRevenueCents: number;
+  revenueChangePercent: number;
+  averageTicketCents: number;
+  statusCounts: Record<OrderStatus, number>;
+  providerBreakdown: ProviderBreakdownEntry[];
+  topProducts: TopProductEntry[];
+  alerts: {
+    paidUnattended: number;
+    processingWithoutTracking: number;
+  };
+}
+
+const REFUND_REVERSING_STATUS = OrderStatus.Refunded;
+
+/** Sums `totalCents` for realized sales in `[from, to)`, minus refunds landed in the same window. */
+const computeNetRevenue = async (
+  from: Date,
+  to: Date,
+): Promise<{ revenueCents: number; orderCount: number }> => {
+  const [sales, refunds] = await Promise.all([
+    Order.aggregate<{ total: number; count: number }>([
+      { $match: { createdAt: { $gte: from, $lt: to }, status: { $in: REALIZED_SALE_STATUSES } } },
+      { $group: { _id: null, total: { $sum: "$totalCents" }, count: { $sum: 1 } } },
+    ]),
+    Order.aggregate<{ total: number }>([
+      { $match: { createdAt: { $gte: from, $lt: to }, status: REFUND_REVERSING_STATUS } },
+      { $group: { _id: null, total: { $sum: "$totalCents" } } },
+    ]),
+  ]);
+  const salesTotal = sales[0]?.total ?? 0;
+  const salesCount = sales[0]?.count ?? 0;
+  const refundTotal = refunds[0]?.total ?? 0;
+  return { revenueCents: salesTotal - refundTotal, orderCount: salesCount };
+};
+
+const computeStatusCounts = async (from: Date, to: Date): Promise<Record<OrderStatus, number>> => {
+  const rows = await Order.aggregate<{ _id: OrderStatus; count: number }>([
+    { $match: { createdAt: { $gte: from, $lt: to } } },
+    { $group: { _id: "$status", count: { $sum: 1 } } },
+  ]);
+  const base = Object.fromEntries(Object.values(OrderStatus).map((s) => [s, 0])) as Record<
+    OrderStatus,
+    number
+  >;
+  for (const row of rows) {
+    base[row._id] = row.count;
+  }
+  return base;
+};
+
+const computeProviderBreakdown = async (from: Date, to: Date): Promise<ProviderBreakdownEntry[]> => {
+  const rows = await Order.aggregate<{ _id: PaymentProvider; total: number; count: number }>([
+    {
+      $match: {
+        createdAt: { $gte: from, $lt: to },
+        status: { $in: REALIZED_SALE_STATUSES },
+      },
+    },
+    { $group: { _id: "$payment.provider", total: { $sum: "$totalCents" }, count: { $sum: 1 } } },
+  ]);
+  return rows.map((r) => ({ provider: r._id, revenueCents: r.total, orderCount: r.count }));
+};
+
+const computeTopProducts = async (from: Date, to: Date, limit = 10): Promise<TopProductEntry[]> => {
+  const rows = await Order.aggregate<{
+    _id: { productId: Types.ObjectId; name: string };
+    unitsSold: number;
+    revenueCents: number;
+  }>([
+    { $match: { createdAt: { $gte: from, $lt: to }, status: { $in: REALIZED_SALE_STATUSES } } },
+    { $unwind: "$items" },
+    {
+      $group: {
+        _id: { productId: "$items.productId", name: "$items.name" },
+        unitsSold: { $sum: "$items.qty" },
+        revenueCents: { $sum: "$items.lineSubtotalCents" },
+      },
+    },
+    { $sort: { unitsSold: -1 } },
+    { $limit: limit },
+  ]);
+  return rows.map((r) => ({
+    productId: r._id.productId.toString(),
+    name: r._id.name,
+    unitsSold: r.unitsSold,
+    revenueCents: r.revenueCents,
+  }));
+};
+
+/**
+ * Operational alerts: current state, deliberately NOT scoped to the requested
+ * date range (an order paid weeks ago and still unattended is exactly as
+ * urgent today regardless of which stats range the admin is looking at).
+ */
+const computeAlerts = async (): Promise<OrderStats["alerts"]> => {
+  const [paidUnattended, processingWithoutTracking] = await Promise.all([
+    Order.countDocuments({ status: OrderStatus.Paid }),
+    Order.countDocuments({
+      status: OrderStatus.Processing,
+      $or: [{ "shipping.trackingNumber": { $exists: false } }, { "shipping.trackingNumber": null }],
+    }),
+  ]);
+  return { paidUnattended, processingWithoutTracking };
+};
+
+const parseStatsRange = (query: OrderStatsQuery): { from: Date; to: Date } => {
+  const to = query.to ? new Date(query.to) : new Date();
+  const from = query.from ? new Date(query.from) : new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+    throw new AppError("El rango de fechas no es válido.", 400);
+  }
+  return { from, to };
+};
+
+const adminStats = async (query: OrderStatsQuery): Promise<OrderStats> => {
+  const { from, to } = parseStatsRange(query);
+  const rangeMs = to.getTime() - from.getTime();
+  const previousFrom = new Date(from.getTime() - rangeMs);
+  const previousTo = from;
+
+  const [current, previous, statusCounts, providerBreakdown, topProducts, alerts] = await Promise.all([
+    computeNetRevenue(from, to),
+    computeNetRevenue(previousFrom, previousTo),
+    computeStatusCounts(from, to),
+    computeProviderBreakdown(from, to),
+    computeTopProducts(from, to),
+    computeAlerts(),
+  ]);
+
+  const revenueChangePercent =
+    previous.revenueCents === 0
+      ? current.revenueCents === 0
+        ? 0
+        : 100
+      : Math.round(((current.revenueCents - previous.revenueCents) / previous.revenueCents) * 100);
+
+  return {
+    rangeFrom: from,
+    rangeTo: to,
+    revenueCents: current.revenueCents,
+    previousRevenueCents: previous.revenueCents,
+    revenueChangePercent,
+    averageTicketCents:
+      current.orderCount === 0 ? 0 : Math.round(current.revenueCents / current.orderCount),
+    statusCounts,
+    providerBreakdown,
+    topProducts,
+    alerts,
+  };
+};
 
 /**
  * Admin-audited entry points for the direct order-status/refund HTTP routes
@@ -726,7 +1051,7 @@ const adminRefund = async (
   return order;
 };
 
-export type { CreateOrderInput, CreateOrderResult, AdminOrderFilters };
+export type { CreateOrderInput, CreateOrderResult };
 export {
   ALLOWED_TRANSITIONS,
   createOrder,
@@ -742,6 +1067,8 @@ export {
   reconcilePendingOrders,
   adminList,
   adminGet,
+  adminGetDetail,
+  adminStats,
   adminAdvance,
   adminRefund,
 };

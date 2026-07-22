@@ -252,6 +252,7 @@ describe("Order routes — admin", () => {
     const list = await admin.get("/api/v1/admin/orders");
     expect(list.status).toBe(200);
     expect(list.body.data.orders.length).toBeGreaterThanOrEqual(1);
+    expect(list.body.meta).toMatchObject({ page: 1, pageSize: 20 });
 
     const one = await admin.get(`/api/v1/admin/orders/${orderId}`);
     expect(one.status).toBe(200);
@@ -399,5 +400,30 @@ describe("Order routes — admin", () => {
     expect(order!.shipping.carrier).toBeUndefined();
     expect(order!.shipping.trackingNumber).toBeUndefined();
     expect(order!.shipping.shippedAt).toBeUndefined();
+  });
+
+  it("returns order stats for an admin, and blocks non-admins", async () => {
+    const { agent, addressId } = await readyToCheckout("ordstats1@test.com");
+    await agent.post("/api/v1/orders").send({
+      idempotencyKey: "http-idem-stats-1",
+      shippingAddressId: addressId,
+      billingAddressId: addressId,
+    });
+
+    const admin = await adminAgent();
+    const res = await admin.get("/api/v1/admin/orders/stats?from=2020-01-01&to=2030-01-01");
+    expect(res.status).toBe(200);
+    expect(res.body.data.stats).toHaveProperty("revenueCents");
+    expect(res.body.data.stats).toHaveProperty("statusCounts");
+    expect(res.body.data.stats).toHaveProperty("alerts");
+
+    const asCustomer = await agent.get("/api/v1/admin/orders/stats");
+    expect(asCustomer.status).toBe(403);
+  });
+
+  it("rejects an invalid stats date range (400)", async () => {
+    const admin = await adminAgent();
+    const res = await admin.get("/api/v1/admin/orders/stats?from=2026-05-01&to=2026-01-01");
+    expect(res.status).toBe(400);
   });
 });

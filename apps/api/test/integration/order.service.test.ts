@@ -31,6 +31,7 @@ import { CouponRedemption } from "../../src/models/CouponRedemption.js";
 import { Order } from "../../src/models/Order.js";
 import { StockReservation } from "../../src/models/StockReservation.js";
 import { AuditLog } from "../../src/models/AuditLog.js";
+import { Certificate } from "../../src/models/Certificate.js";
 import * as orderService from "../../src/services/order.service.js";
 
 /**
@@ -811,5 +812,356 @@ describe("Order service — shipment transitions & shipping patch (Milestone 7)"
     expect(reloaded!.status).toBe(OrderStatus.Processing);
     expect(reloaded!.shipping.carrier).toBeUndefined();
     expect(reloaded!.shipping.trackingNumber).toBeUndefined();
+  });
+});
+
+describe("adminList", () => {
+  const makeOrderDirect = async (
+    overrides: Partial<{
+      customerId: mongoose.Types.ObjectId;
+      status: OrderStatus;
+      paymentProvider: PaymentProvider;
+      orderNumber: string;
+      couponCode: string;
+      createdAt: Date;
+    }> = {},
+  ) => {
+    const { customer, customerId } = await makeCustomer();
+    const { product, variant } = await makeProduct(100000, 5);
+    counter += 1;
+    const order = await Order.create({
+      customerId: overrides.customerId ?? new mongoose.Types.ObjectId(customerId),
+      orderNumber: overrides.orderNumber ?? `MM-${new mongoose.Types.ObjectId().toHexString().toUpperCase()}`,
+      items: [
+        {
+          productId: product._id,
+          variantId: variant._id,
+          sku: variant.sku,
+          name: product.name,
+          qty: 1,
+          unitPriceCents: 100000,
+          lineSubtotalCents: 100000,
+        },
+      ],
+      shippingAddress: address({ label: "Envío" }),
+      billingAddress: address({ label: "Facturación" }),
+      subtotalCents: 100000,
+      shippingCostCents: 0,
+      totalCents: 100000,
+      status: overrides.status ?? OrderStatus.PendingPayment,
+      payment: { provider: overrides.paymentProvider ?? PaymentProvider.Stripe, status: "pending" },
+      idempotencyKey: `idem-list-${counter}`,
+      reservationId: new mongoose.Types.ObjectId(),
+      reservationExpiresAt: new Date(Date.now() + 60_000),
+      ...(overrides.couponCode ? { couponCode: overrides.couponCode } : {}),
+    });
+    if (overrides.createdAt) {
+      await Order.collection.updateOne({ _id: order._id }, { $set: { createdAt: overrides.createdAt } });
+    }
+    return { order, customer };
+  };
+
+  it("paginates results and reports correct meta", async () => {
+    await makeOrderDirect();
+    await makeOrderDirect();
+    await makeOrderDirect();
+
+    const page1 = await orderService.adminList({ page: "1", pageSize: "2" });
+    expect(page1.items).toHaveLength(2);
+    expect(page1.meta).toMatchObject({ page: 1, pageSize: 2, totalPages: 2 });
+    expect(page1.meta.total).toBeGreaterThanOrEqual(3);
+
+    const page2 = await orderService.adminList({ page: "2", pageSize: "2" });
+    expect(page2.items.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("filters by status", async () => {
+    await makeOrderDirect({ status: OrderStatus.Paid });
+    await makeOrderDirect({ status: OrderStatus.Cancelled });
+
+    const result = await orderService.adminList({ status: OrderStatus.Paid });
+    expect(result.items.length).toBeGreaterThan(0);
+    expect(result.items.every((o) => o.status === OrderStatus.Paid)).toBe(true);
+  });
+
+  it("filters by paymentProvider", async () => {
+    await makeOrderDirect({ paymentProvider: PaymentProvider.MercadoPago });
+    const result = await orderService.adminList({ paymentProvider: PaymentProvider.MercadoPago });
+    expect(result.items.length).toBeGreaterThan(0);
+    expect(result.items.every((o) => o.payment.provider === PaymentProvider.MercadoPago)).toBe(true);
+  });
+
+  it("filters by date range (from/to)", async () => {
+    const { order: inRange } = await makeOrderDirect({ createdAt: new Date("2026-01-15") });
+    await makeOrderDirect({ createdAt: new Date("2026-03-01") });
+
+    const result = await orderService.adminList({ from: "2026-01-01", to: "2026-01-31" });
+    expect(result.items.map((o) => o.id)).toContain(inRange.id);
+    expect(result.items).toHaveLength(1);
+  });
+
+  it("filters by hasCoupon", async () => {
+    await makeOrderDirect({ couponCode: "VIP10" });
+    await makeOrderDirect();
+
+    const withCoupon = await orderService.adminList({ hasCoupon: "true" });
+    expect(withCoupon.items.length).toBeGreaterThan(0);
+    expect(withCoupon.items.every((o) => Boolean(o.couponCode))).toBe(true);
+
+    const withoutCoupon = await orderService.adminList({ hasCoupon: "false" });
+    expect(withoutCoupon.items.length).toBeGreaterThan(0);
+    expect(withoutCoupon.items.every((o) => !o.couponCode)).toBe(true);
+  });
+
+  it("searches by orderNumber", async () => {
+    const { order } = await makeOrderDirect({ orderNumber: "MM-SEARCHTEST01" });
+    await makeOrderDirect();
+
+    const result = await orderService.adminList({ search: "SEARCHTEST" });
+    expect(result.items.map((o) => o.id)).toEqual([order.id]);
+  });
+
+  it("searches by customer email", async () => {
+    const { order, customer } = await makeOrderDirect();
+
+    const result = await orderService.adminList({ search: customer.email });
+    expect(result.items.map((o) => o.id)).toContain(order.id);
+  });
+});
+
+describe("adminGetDetail", () => {
+  const makeDetailOrder = async (
+    overrides: Partial<{ customerId: mongoose.Types.ObjectId; status: OrderStatus }> = {},
+  ) => {
+    const { customer, customerId } = await makeCustomer();
+    const { product, variant } = await makeProduct(100000, 5);
+    counter += 1;
+    const order = await Order.create({
+      customerId: overrides.customerId ?? new mongoose.Types.ObjectId(customerId),
+      orderNumber: `MM-${new mongoose.Types.ObjectId().toHexString().toUpperCase()}`,
+      items: [
+        {
+          productId: product._id,
+          variantId: variant._id,
+          sku: variant.sku,
+          name: product.name,
+          qty: 1,
+          unitPriceCents: 100000,
+          lineSubtotalCents: 100000,
+        },
+      ],
+      shippingAddress: address({ label: "Envío" }),
+      billingAddress: address({ label: "Facturación" }),
+      subtotalCents: 100000,
+      shippingCostCents: 0,
+      totalCents: 100000,
+      status: overrides.status ?? OrderStatus.PendingPayment,
+      payment: { provider: PaymentProvider.Stripe, status: "pending" },
+      idempotencyKey: `idem-detail-${counter}`,
+      reservationId: new mongoose.Types.ObjectId(),
+      reservationExpiresAt: new Date(Date.now() + 60_000),
+    });
+    return { order, customer };
+  };
+
+  it("returns order + customer summary + certificates + audit log, all empty-safe", async () => {
+    const { order, customer } = await makeDetailOrder({ status: OrderStatus.Paid });
+
+    const detail = await orderService.adminGetDetail(order.id as string);
+
+    expect(detail.order.id).toBe(order.id);
+    expect(detail.customer).toMatchObject({
+      id: customer.id,
+      name: customer.name,
+      email: customer.email,
+      tier: customer.tier,
+    });
+    expect(detail.customer.previousOrdersCount).toBe(0);
+    expect(detail.customer.totalSpentCents).toBe(0);
+    expect(detail.certificates).toEqual([]);
+    expect(detail.auditLog).toEqual([]);
+  });
+
+  it("enriches items with the product's card image", async () => {
+    const { order } = await makeDetailOrder();
+
+    const detail = await orderService.adminGetDetail(order.id as string);
+
+    expect(detail.order.items[0]).toHaveProperty("image");
+  });
+
+  it("includes certificates issued for the order", async () => {
+    const { order, customer } = await makeDetailOrder({ status: OrderStatus.Paid });
+    await Certificate.create({
+      orderId: order._id,
+      customerId: customer._id,
+      orderItemSnapshot: { sku: order.items[0]!.sku, name: order.items[0]!.name },
+      serialNumber: `SERIAL-${new mongoose.Types.ObjectId().toHexString()}`,
+      pdfUrl: "https://cdn.test/cert.pdf",
+      publicId: "cert_test_1",
+    });
+
+    const detail = await orderService.adminGetDetail(order.id as string);
+
+    expect(detail.certificates).toHaveLength(1);
+    expect(detail.certificates[0]!.pdfUrl).toBe("https://cdn.test/cert.pdf");
+  });
+
+  it("includes audit log entries scoped to the order", async () => {
+    const { order } = await makeDetailOrder({ status: OrderStatus.PendingPayment });
+    await orderService.adminAdvance(
+      order.id as string,
+      OrderStatus.Cancelled,
+      { id: new mongoose.Types.ObjectId().toHexString() },
+      "prueba",
+    );
+
+    const detail = await orderService.adminGetDetail(order.id as string);
+
+    expect(detail.auditLog.length).toBeGreaterThanOrEqual(1);
+    expect(detail.auditLog[0]!.action).toBe("ADVANCE_ORDER_STATUS");
+  });
+
+  it("reports previousOrdersCount and totalSpentCents from the customer's OTHER realized-sale orders", async () => {
+    const { order: firstOrder, customer } = await makeDetailOrder({ status: OrderStatus.Paid });
+    const { order: secondOrder } = await makeDetailOrder({ status: OrderStatus.Paid });
+    await Order.updateOne({ _id: secondOrder._id }, { $set: { customerId: customer._id } });
+
+    const detail = await orderService.adminGetDetail(firstOrder.id as string);
+
+    expect(detail.customer.previousOrdersCount).toBe(1);
+    expect(detail.customer.totalSpentCents).toBe(100000);
+  });
+
+  it("throws 404 for a non-existent order", async () => {
+    await expect(
+      orderService.adminGetDetail(new mongoose.Types.ObjectId().toHexString()),
+    ).rejects.toMatchObject({ statusCode: 404 });
+  });
+});
+
+describe("adminStats", () => {
+  const makeStatsOrder = async (
+    overrides: Partial<{
+      status: OrderStatus;
+      paymentProvider: PaymentProvider;
+      createdAt: Date;
+      trackingNumber: string;
+    }> = {},
+  ) => {
+    const { customerId } = await makeCustomer();
+    const { product, variant } = await makeProduct(100000, 5);
+    counter += 1;
+    const order = await Order.create({
+      customerId: new mongoose.Types.ObjectId(customerId),
+      orderNumber: `MM-${new mongoose.Types.ObjectId().toHexString().toUpperCase()}`,
+      items: [
+        {
+          productId: product._id,
+          variantId: variant._id,
+          sku: variant.sku,
+          name: product.name,
+          qty: 1,
+          unitPriceCents: 100000,
+          lineSubtotalCents: 100000,
+        },
+      ],
+      shippingAddress: address({ label: "Envío" }),
+      billingAddress: address({ label: "Facturación" }),
+      subtotalCents: 100000,
+      shippingCostCents: 0,
+      totalCents: 100000,
+      status: overrides.status ?? OrderStatus.PendingPayment,
+      payment: { provider: overrides.paymentProvider ?? PaymentProvider.Stripe, status: "pending" },
+      idempotencyKey: `idem-stats-${counter}`,
+      reservationId: new mongoose.Types.ObjectId(),
+      reservationExpiresAt: new Date(Date.now() + 60_000),
+      ...(overrides.trackingNumber
+        ? { shipping: { trackingNumber: overrides.trackingNumber } }
+        : {}),
+    });
+    if (overrides.createdAt) {
+      await Order.collection.updateOne(
+        { _id: order._id },
+        { $set: { createdAt: overrides.createdAt } },
+      );
+    }
+    return { order };
+  };
+
+  it("computes net revenue within a date range, excluding cancelled and subtracting refunded", async () => {
+    await makeStatsOrder({ status: OrderStatus.Paid, createdAt: new Date("2026-02-10"), paymentProvider: PaymentProvider.Stripe });
+    await makeStatsOrder({ status: OrderStatus.Paid, createdAt: new Date("2026-02-12"), paymentProvider: PaymentProvider.MercadoPago });
+    await makeStatsOrder({ status: OrderStatus.Cancelled, createdAt: new Date("2026-02-11") });
+    await makeStatsOrder({ status: OrderStatus.Refunded, createdAt: new Date("2026-02-13") });
+    await makeStatsOrder({ status: OrderStatus.Paid, createdAt: new Date("2026-01-05") }); // out of range
+
+    const stats = await orderService.adminStats({ from: "2026-02-01", to: "2026-02-28" });
+
+    // 2 paid (100000 each = 200000) minus 1 refunded (100000) = 100000 net revenue.
+    expect(stats.revenueCents).toBe(100000);
+    expect(stats.providerBreakdown).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ provider: PaymentProvider.Stripe }),
+        expect.objectContaining({ provider: PaymentProvider.MercadoPago }),
+      ]),
+    );
+  });
+
+  it("computes revenue comparison vs the equivalent previous range", async () => {
+    await makeStatsOrder({ status: OrderStatus.Paid, createdAt: new Date("2026-02-15") }); // current range
+    await makeStatsOrder({ status: OrderStatus.Paid, createdAt: new Date("2026-01-15") }); // previous range (equal length, immediately before)
+
+    const stats = await orderService.adminStats({ from: "2026-02-01", to: "2026-02-28" });
+
+    expect(stats.revenueCents).toBe(100000);
+    expect(stats.previousRevenueCents).toBe(100000);
+    expect(stats.revenueChangePercent).toBe(0);
+  });
+
+  it("counts orders per status within range", async () => {
+    await makeStatsOrder({ status: OrderStatus.Paid, createdAt: new Date("2026-03-01") });
+    await makeStatsOrder({ status: OrderStatus.Processing, createdAt: new Date("2026-03-02") });
+
+    const stats = await orderService.adminStats({ from: "2026-03-01", to: "2026-03-31" });
+
+    expect(stats.statusCounts[OrderStatus.Paid]).toBe(1);
+    expect(stats.statusCounts[OrderStatus.Processing]).toBe(1);
+  });
+
+  it("reports paidUnattended and processingWithoutTracking as current, range-independent operational alerts", async () => {
+    await makeStatsOrder({ status: OrderStatus.Paid, createdAt: new Date("2020-01-01") }); // old, still unattended today
+    await makeStatsOrder({ status: OrderStatus.Processing, createdAt: new Date("2020-01-01") }); // old, still no guide
+
+    const stats = await orderService.adminStats({ from: "2026-01-01", to: "2026-01-31" });
+
+    expect(stats.alerts.paidUnattended).toBeGreaterThanOrEqual(1);
+    expect(stats.alerts.processingWithoutTracking).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not flag a processing order that already has a tracking number", async () => {
+    await makeStatsOrder({
+      status: OrderStatus.Processing,
+      createdAt: new Date("2020-01-01"),
+      trackingNumber: "TRACK-1",
+    });
+
+    const stats = await orderService.adminStats({ from: "2026-01-01", to: "2026-01-31" });
+
+    expect(stats.alerts.processingWithoutTracking).toBe(0);
+  });
+
+  it("computes top products by units and by revenue", async () => {
+    await makeStatsOrder({ status: OrderStatus.Paid, createdAt: new Date("2026-04-05") });
+
+    const stats = await orderService.adminStats({ from: "2026-04-01", to: "2026-04-30" });
+
+    expect(stats.topProducts[0]).toMatchObject({ unitsSold: 1, revenueCents: 100000 });
+  });
+
+  it("rejects an invalid date range (from after to)", async () => {
+    await expect(
+      orderService.adminStats({ from: "2026-05-01", to: "2026-01-01" }),
+    ).rejects.toMatchObject({ statusCode: 400 });
   });
 });

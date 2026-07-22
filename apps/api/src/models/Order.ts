@@ -198,6 +198,9 @@ const orderSchema = new Schema<OrderDocument>(
 orderSchema.index({ customerId: 1, idempotencyKey: 1 }, { unique: true });
 // Backs `listMine` (newest first) and admin listing.
 orderSchema.index({ customerId: 1, createdAt: -1 });
+// Backs admin list filtering by status + the stats aggregation's date-range
+// match (both group/sort on status within a createdAt window).
+orderSchema.index({ status: 1, createdAt: -1 });
 // Sparse: most orders have no tracking number yet. Backs the public tracking
 // lookup (GET /api/v1/tracking/:trackingNumber).
 orderSchema.index({ "shipping.trackingNumber": 1 }, { sparse: true });

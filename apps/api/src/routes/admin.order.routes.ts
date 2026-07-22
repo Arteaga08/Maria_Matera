@@ -15,6 +15,7 @@ import { advanceOrderSchema, refundOrderSchema } from "../validators/order.valid
 const router = Router();
 router.use(protect, restrictTo(AdminRole.Admin, AdminRole.Editor));
 
+router.get("/stats", ctrl.adminStats);
 router.get("/", ctrl.adminList);
 router.get("/:orderId", ctrl.adminGet);
 router.patch("/:orderId/status", validate(advanceOrderSchema), ctrl.adminAdvance);
