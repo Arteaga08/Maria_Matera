@@ -1,4 +1,4 @@
-import type { Carrier } from "@maria-matera/shared";
+import type { Carrier, Currency } from "@maria-matera/shared";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
 import { isEmailConfigured, getTransporter } from "../config/email.js";
@@ -22,13 +22,43 @@ interface ShippedEmailData {
   trackingUrl?: string;
 }
 
+interface OrderConfirmationItem {
+  name: string;
+  qty: number;
+}
+
+interface OrderConfirmationEmailData {
+  orderNumber: string;
+  items: OrderConfirmationItem[];
+  totalCents: number;
+  currency: Currency;
+  accountOrdersUrl: string;
+}
+
 interface EmailService {
   sendVerificationEmail(to: string, verifyUrl: string): Promise<void>;
   sendPasswordResetEmail(to: string, resetUrl: string): Promise<void>;
   sendSubscriptionConfirmation(to: string, confirmUrl: string): Promise<void>;
   sendCouponEmail(to: string, coupon: CouponEmailData, unsubscribeUrl: string): Promise<void>;
   sendShippedEmail(to: string, data: ShippedEmailData): Promise<void>;
+  sendOrderConfirmationEmail(to: string, data: OrderConfirmationEmailData): Promise<void>;
 }
+
+const formatMoney = (cents: number, currency: Currency): string =>
+  new Intl.NumberFormat("es-MX", { style: "currency", currency }).format(cents / 100);
+
+// Templates here are plain string interpolation (no auto-escaping engine — see
+// the file header). Any admin/staff-authored free text embedded in an email
+// (coupon description, product name) MUST go through this before interpolation,
+// since a lower-privileged Editor account could otherwise inject markup that
+// executes in a real subscriber's/customer's mail client.
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 
 const send = async (to: string, subject: string, html: string): Promise<void> => {
   if (!isEmailConfigured()) {
@@ -68,7 +98,7 @@ const emailService: EmailService = {
     send(
       to,
       `Tu cupón ${coupon.code} — Maria Matera`,
-      `<p>${coupon.description}</p>
+      `<p>${escapeHtml(coupon.description)}</p>
        <p>Usa el código <strong>${coupon.code}</strong> en tu compra.</p>
        <hr />
        <p style="font-size:12px;color:#888">
@@ -90,7 +120,28 @@ const emailService: EmailService = {
            : ""
        }`,
     ),
+
+  sendOrderConfirmationEmail: (to, data) =>
+    send(
+      to,
+      `Confirmación de tu pedido ${data.orderNumber} — Maria Matera`,
+      `<p>¡Gracias por tu compra! Confirmamos tu pedido <strong>${data.orderNumber}</strong>.</p>
+       <ul>
+         ${data.items
+           .map((item) => `<li>${escapeHtml(item.name)} × ${item.qty}</li>`)
+           .join("\n         ")}
+       </ul>
+       <p>Total: <strong>${formatMoney(data.totalCents, data.currency)}</strong></p>
+       <p>Tus certificados de autenticidad ya están disponibles en tu cuenta.</p>
+       <p><a href="${data.accountOrdersUrl}">Ver mis pedidos y certificados</a></p>`,
+    ),
 };
 
-export type { EmailService, CouponEmailData, ShippedEmailData };
+export type {
+  EmailService,
+  CouponEmailData,
+  ShippedEmailData,
+  OrderConfirmationItem,
+  OrderConfirmationEmailData,
+};
 export { emailService };

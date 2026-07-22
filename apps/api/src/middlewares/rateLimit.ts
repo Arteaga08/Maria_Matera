@@ -7,8 +7,10 @@ import { env } from "../config/env.js";
  * (login, checkout, payments, public reads). Outside production it is a no-op
  * so dev/tests are never throttled. Admin CRUD routes are intentionally NOT
  * limited: their guard is auth + role, not a rate cap — EXCEPT endpoints that
- * verify a brute-forceable code (admin login, 2FA enable/disable), which get
- * a dedicated limiter the same as their customer-facing equivalents.
+ * verify a brute-forceable code (admin login, 2FA enable/disable), or that
+ * trigger a real, costly external side effect at scale (broadcasting an email
+ * to the entire subscriber list), which get a dedicated (lighter) limiter the
+ * same as their customer-facing equivalents.
  *
  * Note: the default MemoryStore does not share state across instances. For a
  * multi-instance deployment, swap in a shared store (Redis) here.

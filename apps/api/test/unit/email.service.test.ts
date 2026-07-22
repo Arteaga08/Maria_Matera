@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Carrier } from "@maria-matera/shared";
+import { Carrier, Currency } from "@maria-matera/shared";
 
 /**
  * `sendShippedEmail` (Milestone 7, Task 3). The transport is mocked at the
@@ -55,5 +55,67 @@ describe("emailService.sendShippedEmail", () => {
     expect(call.html).toContain("TRACK-2");
     expect(call.html).not.toContain("href=");
     expect(call.html).not.toContain('href="#"');
+  });
+});
+
+describe("emailService.sendCouponEmail — HTML escaping", () => {
+  beforeEach(() => {
+    sendMailMock.mockClear();
+  });
+
+  it("escapes an admin-authored description so it can't inject markup into the subscriber's email", async () => {
+    await emailService.sendCouponEmail(
+      "cliente@test.com",
+      { code: "XSS10", description: '<img src=x onerror="alert(1)"> ¡Oferta especial!' },
+      "https://mariamatera.test/newsletter/baja?token=abc",
+    );
+
+    const call = sendMailMock.mock.calls[0]![0] as { html: string };
+    expect(call.html).not.toContain("<img");
+    expect(call.html).toContain("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+    expect(call.html).toContain("¡Oferta especial!");
+  });
+});
+
+describe("emailService.sendOrderConfirmationEmail", () => {
+  beforeEach(() => {
+    sendMailMock.mockClear();
+  });
+
+  it("summarizes the items, the total, and mentions certificates are already in the account", async () => {
+    await emailService.sendOrderConfirmationEmail("cliente@test.com", {
+      orderNumber: "MM-ABC123456789",
+      items: [
+        { name: "Anillo Solitario", qty: 1 },
+        { name: "Arracadas de Perla", qty: 2 },
+      ],
+      totalCents: 350000,
+      currency: Currency.Mxn,
+      accountOrdersUrl: "https://mariamatera.test/cuenta/pedidos",
+    });
+
+    expect(sendMailMock).toHaveBeenCalledTimes(1);
+    const call = sendMailMock.mock.calls[0]![0] as { to: string; subject: string; html: string };
+    expect(call.to).toBe("cliente@test.com");
+    expect(call.subject).toContain("MM-ABC123456789");
+    expect(call.html).toContain("Anillo Solitario");
+    expect(call.html).toContain("Arracadas de Perla");
+    expect(call.html).toContain("$3,500.00");
+    expect(call.html).toContain("certificado");
+    expect(call.html).toContain(`href="https://mariamatera.test/cuenta/pedidos"`);
+  });
+
+  it("escapes an admin-authored product name so it can't inject markup into the customer's email", async () => {
+    await emailService.sendOrderConfirmationEmail("cliente@test.com", {
+      orderNumber: "MM-ABC123456789",
+      items: [{ name: '<script>alert(1)</script>', qty: 1 }],
+      totalCents: 100000,
+      currency: Currency.Mxn,
+      accountOrdersUrl: "https://mariamatera.test/cuenta/pedidos",
+    });
+
+    const call = sendMailMock.mock.calls[0]![0] as { html: string };
+    expect(call.html).not.toContain("<script>");
+    expect(call.html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 });

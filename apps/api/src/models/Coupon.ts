@@ -12,6 +12,7 @@ interface CouponDocument extends Document {
   code: string;
   type: CouponType;
   value: number;
+  description?: string;
   minPurchaseCents?: number;
   maxRedemptions?: number;
   perUserLimit?: number;
@@ -29,6 +30,7 @@ const couponSchema = new Schema<CouponDocument>(
     code: { type: String, required: true, unique: true, uppercase: true, trim: true, index: true },
     type: { type: String, enum: Object.values(CouponType), required: true },
     value: { type: Number, required: true, min: 0 },
+    description: { type: String, trim: true, maxlength: 280 },
     minPurchaseCents: { type: Number, min: 0 },
     maxRedemptions: { type: Number, min: 1 },
     perUserLimit: { type: Number, min: 1 },

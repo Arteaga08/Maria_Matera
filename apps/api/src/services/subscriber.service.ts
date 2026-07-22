@@ -1,6 +1,7 @@
 import { SubscriberStatus, UserType } from "@maria-matera/shared";
 import { env } from "../config/env.js";
 import { Subscriber } from "../models/Subscriber.js";
+import type { CouponDocument } from "../models/Coupon.js";
 import { AppError } from "../utils/AppError.js";
 import { hashToken, randomToken } from "../utils/token.js";
 import type { Actor } from "../utils/actor.js";
@@ -10,7 +11,9 @@ import { adminGet as getCoupon } from "./coupon.service.js";
 
 /**
  * Newsletter marketing: double opt-in subscription, one-click unsubscribe, and
- * sending a coupon to confirmed subscribers. Sending is sequential for now; a
+ * sending a coupon to confirmed subscribers. Sending is sequential internally;
+ * the controller (Milestone 9) fires this off fire-and-forget so the admin
+ * request doesn't block on however many subscribers are on the list — a real
  * background queue is introduced in Paso 4.
  */
 
@@ -56,8 +59,18 @@ const unsubscribe = async (rawToken: string): Promise<void> => {
   await subscriber.save();
 };
 
-const broadcastCoupon = async (couponId: string, actor: Actor): Promise<{ sent: number }> => {
-  const coupon = await getCoupon(couponId);
+/**
+ * Fetches the coupon to broadcast. Split out from `broadcastCoupon` so the
+ * controller can validate the `couponId` — and 404 immediately on a bad one —
+ * BEFORE acknowledging the request, while the actual mass-send (below) still
+ * runs fire-and-forget in the background.
+ */
+const getCouponForBroadcast = (couponId: string): Promise<CouponDocument> => getCoupon(couponId);
+
+const broadcastCoupon = async (
+  coupon: CouponDocument,
+  actor: Actor,
+): Promise<{ sent: number }> => {
   const subscribers = await Subscriber.find({ status: SubscriberStatus.Subscribed }).select(
     "+unsubscribeToken",
   );
@@ -67,7 +80,10 @@ const broadcastCoupon = async (couponId: string, actor: Actor): Promise<{ sent: 
     const unsubscribeUrl = `${env.appUrl}/newsletter/baja?token=${subscriber.unsubscribeToken}`;
     await emailService.sendCouponEmail(
       subscriber.email,
-      { code: coupon.code, description: `Aprovecha el cupón ${coupon.code} en Maria Matera.` },
+      {
+        code: coupon.code,
+        description: coupon.description ?? `Aprovecha el cupón ${coupon.code} en Maria Matera.`,
+      },
       unsubscribeUrl,
     );
     sent += 1;
@@ -86,4 +102,4 @@ const broadcastCoupon = async (couponId: string, actor: Actor): Promise<{ sent: 
   return { sent };
 };
 
-export { subscribe, confirm, unsubscribe, broadcastCoupon };
+export { subscribe, confirm, unsubscribe, getCouponForBroadcast, broadcastCoupon };

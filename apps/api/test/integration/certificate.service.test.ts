@@ -20,6 +20,18 @@ const stripeMock = vi.hoisted(() => ({
 }));
 vi.mock("../../src/services/payment/stripe.provider.js", () => ({ stripeProvider: stripeMock }));
 
+// `orderService.markPaid` now fires `dispatchPaidSideEffects` in the
+// background (Milestone 9), which itself calls the REAL `issueForOrder` —
+// left un-mocked, that would race the explicit `certificateService
+// .issueForOrder(order)` calls this file makes to test that function in
+// isolation (both racing past the same check-then-create idempotency guard),
+// producing duplicate certificates/uploads. Mocked away here; the dispatcher's
+// own wiring is covered by `order.paid-dispatch.test.ts` and its internals by
+// `order.notifications.test.ts`.
+vi.mock("../../src/services/notification/order.notifications.js", () => ({
+  dispatchPaidSideEffects: vi.fn().mockResolvedValue(undefined),
+}));
+
 const uploadStreamMock = vi.hoisted(() => vi.fn());
 const destroyMock = vi.hoisted(() => vi.fn());
 const isCloudinaryConfiguredMock = vi.hoisted(() => vi.fn());
