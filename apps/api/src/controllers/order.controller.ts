@@ -56,7 +56,7 @@ const adminAdvance = asyncHandler(async (req, res) => {
   const order = await orderService.adminAdvance(
     req.params.orderId as string,
     to,
-    getActor(req).id,
+    getActor(req),
     req.body.reason as string | undefined,
     shippingPatch,
   );
@@ -67,7 +67,7 @@ const adminRefund = asyncHandler(async (req, res) => {
   const order = await orderService.adminRefund(
     req.params.orderId as string,
     req.body.reason as string,
-    getActor(req).id,
+    getActor(req),
   );
   sendResponse({ res, message: "Orden reembolsada.", data: { order } });
 });

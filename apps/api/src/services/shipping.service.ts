@@ -12,12 +12,18 @@ import * as orderService from "./order.service.js";
 /**
  * Shipping business logic (Milestone 7, Task 3). A thin admin-mutation layer
  * on top of `order.service.ts`'s already-atomic status machine: every method
- * that changes order status delegates entirely to `adminAdvance` (which rides
- * the SAME save as the shipping-field patch — see Task 2) rather than
+ * that changes order status delegates entirely to `advance` (which rides the
+ * SAME save as the shipping-field patch — see Task 2) rather than
  * re-implementing any transition/validation logic here. `editGuide` is the one
  * exception by design: it corrects carrier/tracking-number typos on an
  * already-shipped order with NO status change, so it goes through `adminGet` +
  * a plain `order.save()` instead.
+ *
+ * Deliberately calls `advance` (the unaudited state-machine primitive), not
+ * `adminAdvance` (the audited wrapper for the direct order-status HTTP route)
+ * — every method here already records its own richer, domain-specific audit
+ * entry below, so going through `adminAdvance` too would double-audit the
+ * same mutation with a redundant generic entry.
  */
 
 const MODULE = "shipping";
@@ -48,7 +54,7 @@ interface PublicTrackResult {
 
 /**
  * Assigns a carrier + tracking number and transitions `processing → shipped`
- * atomically (via `adminAdvance`'s shipping-patch argument — no separate
+ * atomically (via `advance`'s shipping-patch argument — no separate
  * `order.save()` here). The shipped-notification email is sent AFTER the
  * shipment is already persisted, wrapped in its own try/catch: a transport
  * failure must never surface as an HTTP error for an order that already shows
@@ -62,7 +68,7 @@ const assignGuide = async (
   actor: Actor,
   reason?: string,
 ): Promise<OrderDocument> => {
-  const order = await orderService.adminAdvance(orderId, OrderStatus.Shipped, actor.id, reason, {
+  const order = await orderService.advance(orderId, OrderStatus.Shipped, actor.id, reason, {
     carrier: input.carrier,
     trackingNumber: input.trackingNumber,
     shippedAt: new Date(),
@@ -108,7 +114,7 @@ const markDelivered = async (
   actor: Actor,
   reason?: string,
 ): Promise<OrderDocument> => {
-  const order = await orderService.adminAdvance(
+  const order = await orderService.advance(
     orderId,
     OrderStatus.Delivered,
     actor.id,
@@ -130,7 +136,7 @@ const markDelivered = async (
 
 /**
  * Corrects a typo'd carrier/tracking number on an already-shipped order — no
- * status change, so this does NOT go through `adminAdvance`. Only the fields
+ * status change, so this does NOT go through `advance`. Only the fields
  * present in `input` are applied (partial update); "at least one field
  * provided" is Task 4 validator territory, not re-checked here.
  * Caller (validate(editGuideSchema)) guarantees at least one of
@@ -179,7 +185,7 @@ const editGuide = async (
 
 /**
  * Undoes a shipment: `shipped → processing`, clearing all four shipping
- * fields atomically via `adminAdvance`'s explicit `null` patch (Task 2). A
+ * fields atomically via `advance`'s explicit `null` patch (Task 2). A
  * reason is REQUIRED (not optional) — undoing a shipment needs a stated
  * justification for the audit trail.
  */
@@ -188,7 +194,7 @@ const revertShipment = async (
   reason: string,
   actor: Actor,
 ): Promise<OrderDocument> => {
-  const order = await orderService.adminAdvance(
+  const order = await orderService.advance(
     orderId,
     OrderStatus.Processing,
     actor.id,
@@ -221,7 +227,7 @@ const markProcessing = async (
   actor: Actor,
   reason?: string,
 ): Promise<OrderDocument> => {
-  const order = await orderService.adminAdvance(orderId, OrderStatus.Processing, actor.id, reason);
+  const order = await orderService.advance(orderId, OrderStatus.Processing, actor.id, reason);
 
   await recordAudit({
     actorId: actor.id,

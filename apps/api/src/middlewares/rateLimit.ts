@@ -5,8 +5,10 @@ import { env } from "../config/env.js";
 /**
  * Rate-limiter factory. Each sensitive action gets its own dedicated limiter
  * (login, checkout, payments, public reads). Outside production it is a no-op
- * so dev/tests are never throttled. Admin routes are intentionally NOT limited:
- * their guard is auth + role, not a rate cap.
+ * so dev/tests are never throttled. Admin CRUD routes are intentionally NOT
+ * limited: their guard is auth + role, not a rate cap — EXCEPT endpoints that
+ * verify a brute-forceable code (admin login, 2FA enable/disable), which get
+ * a dedicated limiter the same as their customer-facing equivalents.
  *
  * Note: the default MemoryStore does not share state across instances. For a
  * multi-instance deployment, swap in a shared store (Redis) here.

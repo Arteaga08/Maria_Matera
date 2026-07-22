@@ -7,6 +7,7 @@ import {
   OrderStatus,
   PaymentProvider,
   PaymentStatus,
+  UserType,
 } from "@maria-matera/shared";
 
 /**
@@ -29,6 +30,7 @@ import { Coupon } from "../../src/models/Coupon.js";
 import { CouponRedemption } from "../../src/models/CouponRedemption.js";
 import { Order } from "../../src/models/Order.js";
 import { StockReservation } from "../../src/models/StockReservation.js";
+import { AuditLog } from "../../src/models/AuditLog.js";
 import * as orderService from "../../src/services/order.service.js";
 
 /**
@@ -590,6 +592,75 @@ describe("Order service — status transitions", () => {
   });
 });
 
+describe("Order service — admin audit trail (pre-merge M8 hardening)", () => {
+  const seedOrder = async (key: string) => {
+    const { customerId, shippingAddressId, billingAddressId } = await makeCustomer();
+    const { product, variant } = await makeProduct(100000, 10);
+    await seedCart(customerId, [{ product, variant, qty: 1 }]);
+    const { order } = await orderService.createOrder(customerId, {
+      idempotencyKey: key,
+      shippingAddressId,
+      billingAddressId,
+    });
+    return order;
+  };
+
+  it("adminAdvance records an ADVANCE_ORDER_STATUS audit entry", async () => {
+    const order = await seedOrder("key-audit-advance-1");
+    await orderService.markPaid(order.id, "admin-1");
+    const adminId = new mongoose.Types.ObjectId().toString();
+
+    await orderService.adminAdvance(
+      order.id,
+      OrderStatus.Processing,
+      { id: adminId, ip: "10.0.0.5" },
+      "inicio de surtido",
+    );
+
+    const audit = await AuditLog.findOne({ action: "ADVANCE_ORDER_STATUS", targetId: order.id });
+    expect(audit).not.toBeNull();
+    expect(audit!.actorId.toString()).toBe(adminId);
+    expect(audit!.actorType).toBe(UserType.Admin);
+    expect(audit!.module).toBe("order");
+    expect(audit!.ip).toBe("10.0.0.5");
+  });
+
+  it("adminRefund records a REFUND_ORDER audit entry", async () => {
+    const order = await seedOrder("key-audit-refund-1");
+    await orderService.markPaid(order.id, "admin-1");
+    const adminId = new mongoose.Types.ObjectId().toString();
+
+    await orderService.adminRefund(order.id, "Producto defectuoso", { id: adminId });
+
+    const audit = await AuditLog.findOne({ action: "REFUND_ORDER", targetId: order.id });
+    expect(audit).not.toBeNull();
+    expect(audit!.actorId.toString()).toBe(adminId);
+    expect(audit!.actorType).toBe(UserType.Admin);
+    expect(audit!.module).toBe("order");
+  });
+
+  it("the unaudited primitives (advance/refund/cancel/markPaid) never write to AuditLog — system-driven transitions must stay unaudited", async () => {
+    const order = await seedOrder("key-audit-none-1");
+    await orderService.markPaid(order.id, "system:stripe-webhook");
+    await orderService.advance(order.id, OrderStatus.Processing, "system:stripe-webhook");
+    await orderService.advance(order.id, OrderStatus.Shipped, "system:stripe-webhook");
+    await orderService.advance(order.id, OrderStatus.Delivered, "system:stripe-webhook");
+
+    const otherOrder = await seedOrder("key-audit-none-2");
+    await orderService.markPaid(otherOrder.id, "system:stripe-webhook");
+    await orderService.cancel(otherOrder.id, "motivo", "system:stripe-webhook");
+
+    const thirdOrder = await seedOrder("key-audit-none-3");
+    await orderService.markPaid(thirdOrder.id, "system:stripe-webhook");
+    await orderService.refund(thirdOrder.id, "motivo", "system:stripe-webhook");
+
+    const entries = await AuditLog.find({
+      targetId: { $in: [order.id, otherOrder.id, thirdOrder.id] },
+    });
+    expect(entries).toHaveLength(0);
+  });
+});
+
 describe("Order service — shipment transitions & shipping patch (Milestone 7)", () => {
   const seedOrder = async (key: string) => {
     const { customerId, shippingAddressId, billingAddressId } = await makeCustomer();
@@ -711,7 +782,7 @@ describe("Order service — shipment transitions & shipping patch (Milestone 7)"
     await orderService.markPaid(order.id, "admin-1");
     await orderService.advance(order.id, OrderStatus.Processing, "admin-1");
 
-    await orderService.adminAdvance(order.id, OrderStatus.Shipped, "admin-1", undefined, {
+    await orderService.adminAdvance(order.id, OrderStatus.Shipped, { id: "admin-1" }, undefined, {
       carrier: Carrier.Estafeta,
       trackingNumber: "EST-555",
     });

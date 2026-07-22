@@ -62,3 +62,34 @@ describe("Admin auth", () => {
     expect(res.status).toBe(403);
   });
 });
+
+describe("Admin auth — 2FA rate limiting (pre-merge M8 hardening)", () => {
+  // The limiter itself is a no-op outside production (see `rateLimit.ts`), so
+  // this cannot assert real throttling — only that wiring `twoFactorLimiter`
+  // into the route chain does not break `/2fa/enable` / `/2fa/disable` under
+  // repeated hits, mirroring `shipping.routes.test.ts`'s equivalent guard.
+  it("does not error under repeated hits on /2fa/enable and /2fa/disable", async () => {
+    await AdminUser.create({
+      username: "owner-2fa",
+      email: "owner-2fa@test.com",
+      password: ADMIN_PASSWORD,
+      role: AdminRole.Admin,
+    });
+    const agent = request.agent(app);
+    await agent
+      .post("/api/v1/admin/auth/login")
+      .send({ email: "owner-2fa@test.com", password: ADMIN_PASSWORD });
+
+    for (let i = 0; i < 5; i += 1) {
+      const res = await agent.post("/api/v1/admin/auth/2fa/enable").send({ totp: "123456" });
+      // No 2FA secret was ever set up, so the codes above are always wrong —
+      // the meaningful assertion is that the request reaches the controller
+      // (400, a business rejection) rather than being blocked (429) or
+      // crashing (5xx) under the new limiter.
+      expect(res.status).toBe(400);
+    }
+
+    const disable = await agent.post("/api/v1/admin/auth/2fa/disable").send({ totp: "123456" });
+    expect(disable.status).toBe(400);
+  });
+});
