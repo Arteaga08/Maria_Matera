@@ -17,4 +17,14 @@ const adjustStock = asyncHandler(async (req, res) => {
   sendResponse({ res, message: "Existencia actualizada.", data: { variant } });
 });
 
-export { adjustStock };
+const adminList = asyncHandler(async (req, res) => {
+  const { items, meta } = await inventory.adminList(req.query);
+  sendResponse({ res, message: "Inventario.", data: { items }, meta });
+});
+
+const adminStats = asyncHandler(async (_req, res) => {
+  const stats = await inventory.adminStats();
+  sendResponse({ res, message: "Estadísticas de inventario.", data: { stats } });
+});
+
+export { adjustStock, adminList, adminStats };

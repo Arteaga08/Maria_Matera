@@ -1,9 +1,12 @@
-import mongoose, { type ClientSession } from "mongoose";
+import mongoose, { Types, type ClientSession, type PipelineStage } from "mongoose";
 import { ReservationStatus, UserType } from "@maria-matera/shared";
+import type { PaginationMeta } from "@maria-matera/shared";
+import { Category } from "../models/Category.js";
 import { ProductVariant, type ProductVariantDocument } from "../models/ProductVariant.js";
 import { StockReservation, type StockReservationDocument } from "../models/StockReservation.js";
 import { AppError } from "../utils/AppError.js";
 import type { Actor } from "../utils/actor.js";
+import { parseListQuery, buildMeta } from "../utils/listQuery.js";
 import { recordAudit } from "./audit.service.js";
 import { notifyOwner } from "./notification/telegram.js";
 
@@ -330,12 +333,191 @@ const releaseExpired = async (): Promise<number> => {
   return expired.length;
 };
 
-export type { ReserveItemInput };
+// --- Admin operational view (Bloque 2 dashboard) -----------------------------
+
+const ADMIN_LIST_ALLOWED_SORT = ["available", "sku", "onHand"];
+
+interface InventoryRow {
+  variantId: string;
+  sku: string;
+  size?: string;
+  material?: string;
+  onHand: number;
+  reserved: number;
+  available: number;
+  lowStock: boolean;
+  isArchived: boolean;
+  productId: string;
+  productName: string;
+  productImage?: string;
+}
+
+interface InventoryStats {
+  totalVariants: number;
+  totalOnHand: number;
+  totalReserved: number;
+  lowStock: { count: number; skus: string[] };
+  outOfStock: { count: number; skus: string[] };
+  activeReservations: { count: number; units: number };
+}
+
+interface RawInventoryRow {
+  _id: Types.ObjectId;
+  sku: string;
+  size?: string;
+  material?: string;
+  onHand: number;
+  reserved: number;
+  available: number;
+  isArchived: boolean;
+  product: { _id: Types.ObjectId; name: string; images?: { cardPrimary?: string } };
+}
+
+/**
+ * Per-variant operational stock list. Aggregation (not a plain find) because
+ * `available` is a Mongoose virtual — invisible to queries — so it is
+ * recomputed server-side with `$subtract` to allow filtering/sorting on it.
+ */
+const adminList = async (
+  query: Record<string, unknown>,
+): Promise<{ items: InventoryRow[]; meta: PaginationMeta }> => {
+  const { page, pageSize, skip, sort } = parseListQuery(query, {
+    allowedSort: ADMIN_LIST_ALLOWED_SORT,
+    defaultSort: "available",
+  });
+
+  const variantMatch: Record<string, unknown> = {};
+  if (query.includeArchived !== "true") {
+    variantMatch.isArchived = false;
+  }
+
+  const postLookupMatch: Record<string, unknown> = {};
+  if (query.lowStock === "true") {
+    postLookupMatch.available = { $lte: LOW_STOCK_THRESHOLD };
+  }
+  if (query.outOfStock === "true") {
+    postLookupMatch.available = { $lte: 0 };
+  }
+  if (typeof query.category === "string" && query.category.trim()) {
+    const category = await Category.findOne({ slug: query.category.trim() });
+    postLookupMatch["product.categoryId"] = category?._id ?? new Types.ObjectId();
+  }
+  if (typeof query.search === "string" && query.search.trim()) {
+    const regex = new RegExp(query.search.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    postLookupMatch.$or = [{ sku: regex }, { "product.name": regex }];
+  }
+
+  const basePipeline: PipelineStage[] = [
+    { $match: variantMatch },
+    { $addFields: { available: { $subtract: ["$onHand", "$reserved"] } } },
+    {
+      $lookup: {
+        from: "products",
+        localField: "productId",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    { $unwind: "$product" },
+    ...(Object.keys(postLookupMatch).length ? [{ $match: postLookupMatch }] : []),
+  ];
+
+  const [rows, countRows] = await Promise.all([
+    ProductVariant.aggregate<RawInventoryRow>([
+      ...basePipeline,
+      { $sort: { ...sort, _id: 1 } },
+      { $skip: skip },
+      { $limit: pageSize },
+      {
+        $project: {
+          sku: 1,
+          size: 1,
+          material: 1,
+          onHand: 1,
+          reserved: 1,
+          available: 1,
+          isArchived: 1,
+          "product._id": 1,
+          "product.name": 1,
+          "product.images.cardPrimary": 1,
+        },
+      },
+    ]),
+    ProductVariant.aggregate<{ total: number }>([...basePipeline, { $count: "total" }]),
+  ]);
+
+  const items: InventoryRow[] = rows.map((row) => ({
+    variantId: row._id.toString(),
+    sku: row.sku,
+    size: row.size,
+    material: row.material,
+    onHand: row.onHand,
+    reserved: row.reserved,
+    available: row.available,
+    lowStock: row.available <= LOW_STOCK_THRESHOLD,
+    isArchived: row.isArchived,
+    productId: row.product._id.toString(),
+    productName: row.product.name,
+    productImage: row.product.images?.cardPrimary,
+  }));
+
+  return { items, meta: buildMeta(page, pageSize, countRows[0]?.total ?? 0) };
+};
+
+/** Aggregate stock health snapshot for the dashboard. Archived variants excluded. */
+const adminStats = async (): Promise<InventoryStats> => {
+  const [variantAgg, alertRows, reservationAgg] = await Promise.all([
+    ProductVariant.aggregate<{ totalVariants: number; totalOnHand: number; totalReserved: number }>([
+      { $match: { isArchived: false } },
+      {
+        $group: {
+          _id: null,
+          totalVariants: { $sum: 1 },
+          totalOnHand: { $sum: "$onHand" },
+          totalReserved: { $sum: "$reserved" },
+        },
+      },
+    ]),
+    ProductVariant.aggregate<{ sku: string; available: number }>([
+      { $match: { isArchived: false } },
+      { $addFields: { available: { $subtract: ["$onHand", "$reserved"] } } },
+      { $match: { available: { $lte: LOW_STOCK_THRESHOLD } } },
+      { $sort: { available: 1, sku: 1 } },
+      { $project: { sku: 1, available: 1 } },
+    ]),
+    StockReservation.aggregate<{ count: number; units: number }>([
+      { $match: { status: ReservationStatus.Active } },
+      { $unwind: "$items" },
+      { $group: { _id: "$_id", units: { $sum: "$items.qty" } } },
+      { $group: { _id: null, count: { $sum: 1 }, units: { $sum: "$units" } } },
+    ]),
+  ]);
+
+  const totals = variantAgg[0] ?? { totalVariants: 0, totalOnHand: 0, totalReserved: 0 };
+  const outRows = alertRows.filter((r) => r.available <= 0);
+
+  return {
+    totalVariants: totals.totalVariants,
+    totalOnHand: totals.totalOnHand,
+    totalReserved: totals.totalReserved,
+    lowStock: { count: alertRows.length, skus: alertRows.map((r) => r.sku) },
+    outOfStock: { count: outRows.length, skus: outRows.map((r) => r.sku) },
+    activeReservations: {
+      count: reservationAgg[0]?.count ?? 0,
+      units: reservationAgg[0]?.units ?? 0,
+    },
+  };
+};
+
+export type { ReserveItemInput, InventoryRow, InventoryStats };
 export {
+  LOW_STOCK_THRESHOLD,
   adjustStock,
   reserveStock,
   commitReservation,
   restockCommitted,
   releaseReservation,
   releaseExpired,
+  adminList,
+  adminStats,
 };

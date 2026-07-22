@@ -12,6 +12,7 @@ import { addressRouter } from "./address.routes.js";
 import { cartRouter } from "./cart.routes.js";
 import { orderRouter } from "./order.routes.js";
 import { adminOrderRouter } from "./admin.order.routes.js";
+import { adminInventoryRouter } from "./admin.inventory.routes.js";
 import { shippingAdminRouter, shippingPublicRouter } from "./shipping.routes.js";
 import { certificateRouter, certificateAdminRouter } from "./certificate.routes.js";
 
@@ -52,6 +53,7 @@ apiRouter.use("/admin/media", mediaAdminRouter);
 apiRouter.use("/admin/coupons", couponAdminRouter);
 apiRouter.use("/admin/marketing", marketingAdminRouter);
 apiRouter.use("/admin/orders", adminOrderRouter);
+apiRouter.use("/admin/inventory", adminInventoryRouter);
 apiRouter.use("/admin/shipping", shippingAdminRouter);
 apiRouter.use("/admin/certificates", certificateAdminRouter);
 
