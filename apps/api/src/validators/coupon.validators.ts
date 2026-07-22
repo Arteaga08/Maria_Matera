@@ -31,6 +31,10 @@ const value = Joi.when("type", {
   }),
 });
 
+const description = Joi.string().trim().max(280).messages({
+  "string.max": "La descripción no puede superar los 280 caracteres.",
+});
+
 const createCouponSchema = Joi.object({
   code: code.required(),
   type: Joi.string()
@@ -38,6 +42,7 @@ const createCouponSchema = Joi.object({
     .required()
     .messages({ "any.required": "Indica el tipo de cupón." }),
   value,
+  description,
   minPurchaseCents: Joi.number().integer().min(0),
   maxRedemptions: Joi.number().integer().min(1),
   perUserLimit: Joi.number().integer().min(1),
@@ -50,6 +55,7 @@ const createCouponSchema = Joi.object({
 });
 
 const updateCouponSchema = Joi.object({
+  description,
   minPurchaseCents: Joi.number().integer().min(0),
   maxRedemptions: Joi.number().integer().min(1),
   perUserLimit: Joi.number().integer().min(1),

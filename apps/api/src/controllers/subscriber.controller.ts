@@ -1,3 +1,4 @@
+import { logger } from "../config/logger.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 import { sendResponse } from "../utils/sendResponse.js";
 import { getActor } from "../utils/actor.js";
@@ -38,8 +39,25 @@ const unsubscribe = asyncHandler(async (req, res) => {
 });
 
 const broadcast = asyncHandler(async (req, res) => {
-  const result = await subscribers.broadcastCoupon(req.params.couponId as string, getActor(req));
-  sendResponse({ res, message: "Cupón enviado a los suscriptores.", data: result });
+  const couponId = req.params.couponId as string;
+  const actor = getActor(req);
+  // The couponId is the request's primary input, so it's validated
+  // synchronously — an unknown id still 404s like any other lookup. Only the
+  // actual mass-send (below) is fire-and-forget: it acknowledges the admin
+  // immediately instead of blocking on however many subscribers are on the
+  // list (mirrors the `paid`-order despachador's pattern in
+  // `order.notifications.ts`). A failure there is only logged — the request
+  // has already been answered.
+  const coupon = await subscribers.getCouponForBroadcast(couponId);
+  void subscribers.broadcastCoupon(coupon, actor).catch((error: unknown) => {
+    logger.error({ err: error, couponId }, "Fallo el envío en segundo plano del cupón.");
+  });
+  sendResponse({
+    res,
+    statusCode: 202,
+    message: "El envío se está procesando en segundo plano.",
+    data: null,
+  });
 });
 
 export { subscribe, confirm, unsubscribe, broadcast };

@@ -24,6 +24,7 @@ import * as cartService from "./cart.service.js";
 import * as couponService from "./coupon.service.js";
 import * as inventoryService from "./inventory.service.js";
 import { notifyOwner } from "./notification/telegram.js";
+import { dispatchPaidSideEffects } from "./notification/order.notifications.js";
 import { getPaymentProvider } from "./payment/index.js";
 import { recordAudit } from "./audit.service.js";
 
@@ -433,6 +434,17 @@ const applyTransition = async (
     } finally {
       await session.endSession();
     }
+    // Fire-and-forget, OUTSIDE the transaction: certificates, the customer's
+    // confirmation email, and the owner's Telegram alert are all best-effort
+    // and must never block or fail the payment transition itself (this
+    // matters most on the webhook path, whose ACK must stay 200 no matter
+    // what — see `markPaidInternal`'s doc comment).
+    void dispatchPaidSideEffects(order).catch((error: unknown) => {
+      logger.error(
+        { err: error, orderId: order.id as string },
+        "Fallo el despacho de efectos post-pago.",
+      );
+    });
     return order;
   }
 

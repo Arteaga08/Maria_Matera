@@ -104,4 +104,39 @@ describe("Coupons 2c", () => {
     });
     expect(res.status).toBe(401);
   });
+
+  it("persists a marketing description and allows updating it", async () => {
+    const agent = await adminAgent();
+    const created = await agent.post("/api/v1/admin/coupons").send({
+      code: "DESCRIBED",
+      type: "percent",
+      value: 15,
+      validFrom: iso(-DAY),
+      validTo: iso(DAY),
+      description: "15% de descuento en toda la tienda este fin de semana.",
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.data.coupon.description).toBe(
+      "15% de descuento en toda la tienda este fin de semana.",
+    );
+
+    const updated = await agent
+      .patch(`/api/v1/admin/coupons/${created.body.data.coupon._id}`)
+      .send({ description: "Nueva descripción actualizada." });
+    expect(updated.status).toBe(200);
+    expect(updated.body.data.coupon.description).toBe("Nueva descripción actualizada.");
+  });
+
+  it("rejects a description longer than 280 characters", async () => {
+    const agent = await adminAgent();
+    const res = await agent.post("/api/v1/admin/coupons").send({
+      code: "TOOLONG",
+      type: "percent",
+      value: 10,
+      validFrom: iso(-DAY),
+      validTo: iso(DAY),
+      description: "a".repeat(281),
+    });
+    expect(res.status).toBe(400);
+  });
 });

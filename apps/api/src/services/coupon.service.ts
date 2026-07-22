@@ -21,6 +21,7 @@ interface CreateCouponInput {
   code: string;
   type: CouponType;
   value: number;
+  description?: string;
   minPurchaseCents?: number;
   maxRedemptions?: number;
   perUserLimit?: number;

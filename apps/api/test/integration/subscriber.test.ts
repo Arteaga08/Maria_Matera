@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import mongoose from "mongoose";
 import { AdminRole, SubscriberStatus } from "@maria-matera/shared";
 import { buildApp } from "../../src/app.js";
 import { AdminUser } from "../../src/models/AdminUser.js";
@@ -70,7 +71,7 @@ describe("Newsletter 2d", () => {
     expect(after!.status).toBe(SubscriberStatus.Unsubscribed);
   });
 
-  it("broadcasts a coupon only to confirmed subscribers", async () => {
+  it("broadcasts a coupon only to confirmed subscribers, in the background (202)", async () => {
     const agent = await adminAgent();
     const coupon = await agent.post("/api/v1/admin/coupons").send({
       code: "NEWS15",
@@ -91,9 +92,84 @@ describe("Newsletter 2d", () => {
 
     const couponSpy = vi.spyOn(emailService, "sendCouponEmail").mockResolvedValue();
     const res = await agent.post(`/api/v1/admin/marketing/broadcast/${couponId}`);
-    expect(res.status).toBe(200);
-    expect(res.body.data.sent).toBe(1);
-    expect(couponSpy).toHaveBeenCalledTimes(1);
+    // Fire-and-forget: the request is acknowledged immediately (202), before
+    // the sends complete — `sent` is no longer part of the synchronous response.
+    expect(res.status).toBe(202);
+    expect(res.body.data).toBeNull();
+
+    await vi.waitFor(() => expect(couponSpy).toHaveBeenCalledTimes(1));
+    couponSpy.mockRestore();
+  });
+
+  it("rejects broadcasting a nonexistent coupon synchronously (404), not as a silent background failure", async () => {
+    const agent = await adminAgent();
+    const res = await agent.post(
+      `/api/v1/admin/marketing/broadcast/${new mongoose.Types.ObjectId().toString()}`,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it("emails the coupon's real marketing description instead of a hardcoded line", async () => {
+    const agent = await adminAgent();
+    const coupon = await agent.post("/api/v1/admin/coupons").send({
+      code: "REALCOPY",
+      type: "fixed",
+      value: 5000,
+      validFrom: new Date(Date.now() - DAY).toISOString(),
+      validTo: new Date(Date.now() + DAY).toISOString(),
+      description: "50 pesos de descuento en tu próxima compra.",
+    });
+    const couponId = coupon.body.data.coupon.id ?? coupon.body.data.coupon._id;
+
+    await subscribeAndConfirm("realcopy@test.com");
+    const couponSpy = vi.spyOn(emailService, "sendCouponEmail").mockResolvedValue();
+    await agent.post(`/api/v1/admin/marketing/broadcast/${couponId}`);
+
+    await vi.waitFor(() => expect(couponSpy).toHaveBeenCalledTimes(1));
+    expect(couponSpy.mock.calls[0]![1].description).toBe(
+      "50 pesos de descuento en tu próxima compra.",
+    );
+    couponSpy.mockRestore();
+  });
+
+  it("falls back to a generic line when the coupon has no description set", async () => {
+    const agent = await adminAgent();
+    const coupon = await agent.post("/api/v1/admin/coupons").send({
+      code: "NODESC",
+      type: "percent",
+      value: 10,
+      validFrom: new Date(Date.now() - DAY).toISOString(),
+      validTo: new Date(Date.now() + DAY).toISOString(),
+    });
+    const couponId = coupon.body.data.coupon.id ?? coupon.body.data.coupon._id;
+
+    await subscribeAndConfirm("nodesc@test.com");
+    const couponSpy = vi.spyOn(emailService, "sendCouponEmail").mockResolvedValue();
+    await agent.post(`/api/v1/admin/marketing/broadcast/${couponId}`);
+
+    await vi.waitFor(() => expect(couponSpy).toHaveBeenCalledTimes(1));
+    expect(couponSpy.mock.calls[0]![1].description).toBe(
+      "Aprovecha el cupón NODESC en Maria Matera.",
+    );
+    couponSpy.mockRestore();
+  });
+
+  it("does not error under repeated hits on broadcast (rate limiter is a no-op outside production)", async () => {
+    const agent = await adminAgent();
+    const coupon = await agent.post("/api/v1/admin/coupons").send({
+      code: "REPEAT5",
+      type: "percent",
+      value: 5,
+      validFrom: new Date(Date.now() - DAY).toISOString(),
+      validTo: new Date(Date.now() + DAY).toISOString(),
+    });
+    const couponId = coupon.body.data.coupon.id ?? coupon.body.data.coupon._id;
+
+    const couponSpy = vi.spyOn(emailService, "sendCouponEmail").mockResolvedValue();
+    for (let i = 0; i < 6; i += 1) {
+      const res = await agent.post(`/api/v1/admin/marketing/broadcast/${couponId}`);
+      expect(res.status).toBe(202);
+    }
     couponSpy.mockRestore();
   });
 });

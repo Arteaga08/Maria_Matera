@@ -24,6 +24,16 @@ publicRouter.get("/unsubscribe", ctrl.unsubscribe);
 
 const adminRouter = Router();
 adminRouter.use(protect, restrictTo(AdminRole.Admin, AdminRole.Editor));
-adminRouter.post("/broadcast/:couponId", ctrl.broadcast);
+// Broadcasting emails the ENTIRE confirmed subscriber list — a double-click,
+// client retry, or compromised Editor session re-firing this repeatedly would
+// spam real customers and burn email-provider quota. Unlike ordinary admin
+// CRUD (guarded by auth + role alone, per `rateLimit.ts`'s header), this
+// mass-send action gets its own light limiter too.
+const broadcastLimiter = createRateLimiter({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: "Demasiados envíos de cupón. Intenta de nuevo más tarde.",
+});
+adminRouter.post("/broadcast/:couponId", broadcastLimiter, ctrl.broadcast);
 
 export { publicRouter as newsletterPublicRouter, adminRouter as marketingAdminRouter };

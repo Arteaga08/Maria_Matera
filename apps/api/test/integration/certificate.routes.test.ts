@@ -29,6 +29,21 @@ vi.mock("../../src/config/cloudinary.js", () => ({
   isCloudinaryConfigured: isCloudinaryConfiguredMock,
 }));
 
+// `orderService.markPaid` now fires `dispatchPaidSideEffects` in the
+// background (Milestone 9), which calls the REAL `issueForOrder` — left
+// un-mocked, that would race this file's own explicit `certificateService
+// .issueForOrder(paid)` calls (see `seedPaidCertificate` below), both racing
+// past the same check-then-create idempotency guard. Mocked away here (via
+// `vi.hoisted`, reconfigured in `beforeEach` below, NOT a bare `vi.fn()` in
+// the factory — this file's `afterEach(() => vi.restoreAllMocks())` would
+// otherwise wipe a factory-only mock back to a no-op after the first test);
+// the dispatcher's wiring/internals are covered by
+// `order.paid-dispatch.test.ts` and `order.notifications.test.ts`.
+const dispatchPaidSideEffectsMock = vi.hoisted(() => vi.fn());
+vi.mock("../../src/services/notification/order.notifications.js", () => ({
+  dispatchPaidSideEffects: dispatchPaidSideEffectsMock,
+}));
+
 import { buildApp } from "../../src/app.js";
 import { emailService } from "../../src/services/email.service.js";
 import { AdminUser } from "../../src/models/AdminUser.js";
@@ -56,6 +71,9 @@ beforeEach(() => {
     piSeq += 1;
     return { ref: `pi_cert_http_${piSeq}`, clientSecret: `cs_cert_http_${piSeq}` };
   });
+
+  dispatchPaidSideEffectsMock.mockReset();
+  dispatchPaidSideEffectsMock.mockResolvedValue(undefined);
 
   uploadStreamMock.mockReset();
   isCloudinaryConfiguredMock.mockReset();
