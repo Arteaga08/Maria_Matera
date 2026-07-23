@@ -32,7 +32,7 @@ vi.mock("../../src/services/payment/mercadopago.provider.js", () => ({
   mercadopagoProvider: mercadopagoMock,
 }));
 
-// eslint-disable-next-line import/first -- must import after the mock is registered.
+// Imported after the mock is registered (dynamic import on purpose).
 const { buildApp } = await import("../../src/app.js");
 const orderService = await import("../../src/services/order.service.js");
 

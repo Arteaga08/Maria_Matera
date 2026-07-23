@@ -31,6 +31,29 @@ const uploadImage = (buffer: Buffer, folder: string): Promise<UploadResult> => {
   });
 };
 
+/**
+ * Uploads an in-memory video buffer (hero-slide videos for the content
+ * editor). Mirrors `uploadImage` but with `resource_type: "video"`.
+ */
+const uploadVideo = (buffer: Buffer, folder: string): Promise<UploadResult> => {
+  if (!isCloudinaryConfigured()) {
+    throw new AppError("El servicio de videos no está configurado.", 503);
+  }
+  return new Promise<UploadResult>((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder, resource_type: "video" },
+      (error, result) => {
+        if (error || !result) {
+          reject(error ?? new AppError("No se pudo subir el video.", 502));
+          return;
+        }
+        resolve({ url: result.secure_url, publicId: result.public_id });
+      },
+    );
+    stream.end(buffer);
+  });
+};
+
 const uploadRawPdf = (buffer: Buffer, folder: string): Promise<UploadResult> => {
   if (!isCloudinaryConfigured()) {
     throw new AppError("El servicio de archivos no está configurado.", 503);
@@ -73,4 +96,4 @@ const deleteRawAsset = (publicId: string): Promise<void> => {
 };
 
 export type { UploadResult };
-export { uploadImage, uploadRawPdf, deleteRawAsset };
+export { uploadImage, uploadVideo, uploadRawPdf, deleteRawAsset };

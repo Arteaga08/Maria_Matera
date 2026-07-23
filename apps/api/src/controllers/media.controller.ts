@@ -14,4 +14,9 @@ const upload = asyncHandler(async (req, res) => {
   sendResponse({ res, statusCode: 201, message: "Imagen subida.", data: result });
 });
 
-export { upload };
+const uploadVideo = asyncHandler(async (req, res) => {
+  const result = await media.uploadVideo(req.file!.buffer, MEDIA_FOLDER);
+  sendResponse({ res, statusCode: 201, message: "Video subido.", data: result });
+});
+
+export { upload, uploadVideo };

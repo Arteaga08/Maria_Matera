@@ -27,6 +27,47 @@ const multerInstance = multer({
 
 const uploadSingleImage = multerInstance.single("image");
 
+/**
+ * Video upload guard (hero-slide videos for the content editor). Separate
+ * multer instance: different field name, size limit and MIME whitelist than
+ * images. Memory storage holds up to MAX_VIDEO_BYTES in RAM per request —
+ * acceptable for a low-traffic admin-only endpoint.
+ */
+
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024; // 100 MB
+const ALLOWED_VIDEO_MIME = new Set(["video/mp4", "video/webm", "video/quicktime"]);
+
+const videoMulterInstance = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_VIDEO_BYTES, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (ALLOWED_VIDEO_MIME.has(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new AppError("Tipo de archivo no permitido. Usa MP4, WebM o MOV.", 400));
+    }
+  },
+});
+
+const uploadSingleVideo = videoMulterInstance.single("video");
+
+const assertVideoMagicBytes = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  if (!req.file) {
+    next(new AppError("No se envió ningún video.", 400));
+    return;
+  }
+  const detected = await fileTypeFromBuffer(req.file.buffer);
+  if (!detected || !ALLOWED_VIDEO_MIME.has(detected.mime)) {
+    next(new AppError("El archivo no es un video válido.", 400));
+    return;
+  }
+  next();
+};
+
 const assertImageMagicBytes = async (
   req: Request,
   _res: Response,
@@ -44,4 +85,4 @@ const assertImageMagicBytes = async (
   next();
 };
 
-export { uploadSingleImage, assertImageMagicBytes };
+export { uploadSingleImage, assertImageMagicBytes, uploadSingleVideo, assertVideoMagicBytes };

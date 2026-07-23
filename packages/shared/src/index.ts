@@ -12,6 +12,8 @@ export {
   CouponType,
   SubscriberStatus,
   Carrier,
+  HeroMediaType,
+  AnnouncementType,
 } from "./enums.js";
 
 export type { ApiStatus, PaginationMeta, ApiSuccess, ApiError, ApiResponse } from "./api.js";

@@ -89,6 +89,18 @@ const SubscriberStatus = {
 } as const;
 type SubscriberStatus = (typeof SubscriberStatus)[keyof typeof SubscriberStatus];
 
+const HeroMediaType = {
+  Image: "image",
+  Video: "video",
+} as const;
+type HeroMediaType = (typeof HeroMediaType)[keyof typeof HeroMediaType];
+
+const AnnouncementType = {
+  Bar: "bar",
+  Popup: "popup",
+} as const;
+type AnnouncementType = (typeof AnnouncementType)[keyof typeof AnnouncementType];
+
 const Carrier = {
   Dhl: "dhl",
   FedEx: "fedex",
@@ -112,4 +124,6 @@ export {
   CouponType,
   SubscriberStatus,
   Carrier,
+  HeroMediaType,
+  AnnouncementType,
 };
