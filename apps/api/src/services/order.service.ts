@@ -23,6 +23,7 @@ import { generateOrderNumber } from "../utils/orderNumber.js";
 import type { FilterQuery } from "mongoose";
 import type { PaginationMeta } from "@maria-matera/shared";
 import { parseListQuery, buildMeta } from "../utils/listQuery.js";
+import { parseStatsRange } from "../utils/statsRange.js";
 import { Product } from "../models/Product.js";
 import { Certificate, type CertificateDocument } from "../models/Certificate.js";
 import { AuditLog, type AuditLogDocument } from "../models/AuditLog.js";
@@ -957,17 +958,10 @@ const computeAlerts = async (): Promise<OrderStats["alerts"]> => {
   return { paidUnattended, processingWithoutTracking };
 };
 
-const parseStatsRange = (query: OrderStatsQuery): { from: Date; to: Date } => {
-  const to = query.to ? new Date(query.to) : new Date();
-  const from = query.from ? new Date(query.from) : new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
-    throw new AppError("El rango de fechas no es válido.", 400);
-  }
-  return { from, to };
-};
+const STATS_DEFAULT_RANGE_DAYS = 7;
 
 const adminStats = async (query: OrderStatsQuery): Promise<OrderStats> => {
-  const { from, to } = parseStatsRange(query);
+  const { from, to } = parseStatsRange(query, STATS_DEFAULT_RANGE_DAYS);
   const rangeMs = to.getTime() - from.getTime();
   const previousFrom = new Date(from.getTime() - rangeMs);
   const previousTo = from;

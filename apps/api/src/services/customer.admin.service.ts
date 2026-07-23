@@ -7,6 +7,7 @@ import { Product } from "../models/Product.js";
 import { AppError } from "../utils/AppError.js";
 import type { Actor } from "../utils/actor.js";
 import { parseListQuery, buildMeta } from "../utils/listQuery.js";
+import { parseStatsRange } from "../utils/statsRange.js";
 import { recordAudit } from "./audit.service.js";
 import { REALIZED_SALE_STATUSES } from "./order.service.js";
 
@@ -272,17 +273,10 @@ const changeTier = async (
   return { id: customer.id as string, tier: customer.tier };
 };
 
-const parseStatsRange = (query: CustomerStatsQuery): { from: Date; to: Date } => {
-  const to = query.to ? new Date(query.to) : new Date();
-  const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
-    throw new AppError("El rango de fechas no es válido.", 400);
-  }
-  return { from, to };
-};
+const STATS_DEFAULT_RANGE_DAYS = 30;
 
 const adminStats = async (query: CustomerStatsQuery): Promise<CustomerStats> => {
-  const { from, to } = parseStatsRange(query);
+  const { from, to } = parseStatsRange(query, STATS_DEFAULT_RANGE_DAYS);
 
   const [totalCustomers, vipCount, verifiedCount, marketingConsentCount, newInRange, topRows] =
     await Promise.all([

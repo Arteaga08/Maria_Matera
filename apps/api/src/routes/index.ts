@@ -18,6 +18,7 @@ import { adminAuditRouter } from "./admin.audit.routes.js";
 import { shippingAdminRouter, shippingPublicRouter } from "./shipping.routes.js";
 import { certificateRouter, certificateAdminRouter } from "./certificate.routes.js";
 import { contentPublicRouter, contentAdminRouter } from "./content.routes.js";
+import { eventPublicRouter, desireAdminRouter } from "./desire.routes.js";
 
 /**
  * API v1 router aggregator. Feature routers (auth, catalog, ...) are mounted
@@ -40,6 +41,7 @@ apiRouter.use("/products", productPublicRouter);
 apiRouter.use("/coupons", couponPublicRouter);
 apiRouter.use("/newsletter", newsletterPublicRouter);
 apiRouter.use("/content", contentPublicRouter);
+apiRouter.use("/events", eventPublicRouter);
 
 // Customer account
 apiRouter.use("/addresses", addressRouter);
@@ -63,5 +65,6 @@ apiRouter.use("/admin/audit", adminAuditRouter);
 apiRouter.use("/admin/shipping", shippingAdminRouter);
 apiRouter.use("/admin/certificates", certificateAdminRouter);
 apiRouter.use("/admin/content", contentAdminRouter);
+apiRouter.use("/admin/desire", desireAdminRouter);
 
 export { apiRouter };
