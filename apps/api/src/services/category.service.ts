@@ -1,5 +1,6 @@
 import { UserType } from "@maria-matera/shared";
 import { Category, type CategoryDocument } from "../models/Category.js";
+import { Product } from "../models/Product.js";
 import { AppError } from "../utils/AppError.js";
 import { uniqueSlug } from "../utils/slug.js";
 import { recordAudit } from "./audit.service.js";
@@ -51,7 +52,15 @@ const adminGet = async (id: string): Promise<CategoryDocument> => {
 
 const create = async (input: CreateCategoryInput, actor: Actor): Promise<CategoryDocument> => {
   const slug = await uniqueSlug(Category, input.name);
-  const category = await Category.create({ ...input, slug });
+  let category: CategoryDocument;
+  try {
+    category = await Category.create({ ...input, slug });
+  } catch (error) {
+    if ((error as { code?: number }).code === 11000) {
+      throw new AppError("Ya existe una categoría con ese prefijo de SKU.", 400);
+    }
+    throw error;
+  }
   await recordAudit({
     actorId: actor.id,
     actorType: UserType.Admin,
@@ -88,6 +97,10 @@ const update = async (
 
 const remove = async (id: string, actor: Actor): Promise<void> => {
   const category = await adminGet(id);
+  const hasActiveProducts = await Product.exists({ categoryId: category.id, isArchived: false });
+  if (hasActiveProducts) {
+    throw new AppError("No se puede eliminar la categoría: tiene productos activos asociados.", 409);
+  }
   category.isActive = false;
   await category.save();
   await recordAudit({

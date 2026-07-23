@@ -30,6 +30,7 @@ interface Env {
   cloudinary: { cloudName: string; apiKey: string; apiSecret: string };
   email: { user: string; pass: string; from: string };
   telegram: { botToken: string; chatId: string };
+  sentryDsn: string;
   stripeSecretKey: string;
   stripeWebhookSecret: string;
   mercadoPagoAccessToken: string;
@@ -147,6 +148,7 @@ const loadEnv = (): Env => {
       botToken: process.env.TELEGRAM_BOT_TOKEN?.trim() ?? "",
       chatId: process.env.TELEGRAM_CHAT_ID?.trim() ?? "",
     },
+    sentryDsn: process.env.SENTRY_DSN?.trim() ?? "",
     stripeSecretKey: required("STRIPE_SECRET_KEY"),
     stripeWebhookSecret: required("STRIPE_WEBHOOK_SECRET"),
     mercadoPagoAccessToken: requiredSecret("MP_ACCESS_TOKEN"),

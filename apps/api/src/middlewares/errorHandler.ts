@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
 import { env } from "../config/env.js";
 import { logger } from "../config/logger.js";
+import { captureException } from "../config/sentry.js";
 import { AppError } from "../utils/AppError.js";
 
 /**
@@ -51,6 +52,7 @@ const errorHandler = (error: unknown, req: Request, res: Response, _next: NextFu
 
   if (normalized.statusCode >= 500) {
     logger.error({ err: error, path: req.originalUrl }, "Error no controlado");
+    captureException(error, { extra: { path: req.originalUrl } });
   } else {
     logger.warn({ path: req.originalUrl, statusCode: normalized.statusCode }, normalized.message);
   }

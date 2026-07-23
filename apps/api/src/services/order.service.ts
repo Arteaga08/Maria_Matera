@@ -1045,7 +1045,7 @@ const adminRefund = async (
   return order;
 };
 
-export type { CreateOrderInput, CreateOrderResult };
+export type { CreateOrderInput, CreateOrderResult, OrderStats };
 export {
   ALLOWED_TRANSITIONS,
   REALIZED_SALE_STATUSES,

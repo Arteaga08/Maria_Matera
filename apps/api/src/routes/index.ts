@@ -19,6 +19,7 @@ import { shippingAdminRouter, shippingPublicRouter } from "./shipping.routes.js"
 import { certificateRouter, certificateAdminRouter } from "./certificate.routes.js";
 import { contentPublicRouter, contentAdminRouter } from "./content.routes.js";
 import { eventPublicRouter, desireAdminRouter } from "./desire.routes.js";
+import { adminOverviewRouter } from "./admin.overview.routes.js";
 
 /**
  * API v1 router aggregator. Feature routers (auth, catalog, ...) are mounted
@@ -66,5 +67,6 @@ apiRouter.use("/admin/shipping", shippingAdminRouter);
 apiRouter.use("/admin/certificates", certificateAdminRouter);
 apiRouter.use("/admin/content", contentAdminRouter);
 apiRouter.use("/admin/desire", desireAdminRouter);
+apiRouter.use("/admin/overview", adminOverviewRouter);
 
 export { apiRouter };

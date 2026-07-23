@@ -3,6 +3,7 @@ import { env } from "../config/env.js";
 import { Subscriber } from "../models/Subscriber.js";
 import type { CouponDocument } from "../models/Coupon.js";
 import { AppError } from "../utils/AppError.js";
+import { parseStatsRange, type StatsRangeQuery } from "../utils/statsRange.js";
 import { hashToken, randomToken } from "../utils/token.js";
 import type { Actor } from "../utils/actor.js";
 import { emailService } from "./email.service.js";
@@ -104,10 +105,7 @@ const broadcastCoupon = async (
 
 // --- Admin panel stats (Bloque 2 dashboard) ----------------------------------
 
-interface SubscriberStatsQuery {
-  from?: string;
-  to?: string;
-}
+type SubscriberStatsQuery = StatsRangeQuery;
 
 interface SubscriberStats {
   totalSubscribed: number;
@@ -116,12 +114,10 @@ interface SubscriberStats {
   rangeTo: Date;
 }
 
+const STATS_DEFAULT_RANGE_DAYS = 30;
+
 const adminStats = async (query: SubscriberStatsQuery): Promise<SubscriberStats> => {
-  const to = query.to ? new Date(query.to) : new Date();
-  const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
-  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
-    throw new AppError("El rango de fechas no es válido.", 400);
-  }
+  const { from, to } = parseStatsRange(query, STATS_DEFAULT_RANGE_DAYS);
 
   const [totalSubscribed, newInRange] = await Promise.all([
     Subscriber.countDocuments({ status: SubscriberStatus.Subscribed }),

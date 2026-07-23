@@ -1,5 +1,6 @@
 import { UserType } from "@maria-matera/shared";
 import { Collection, type CollectionDocument } from "../models/Collection.js";
+import { Product } from "../models/Product.js";
 import { AppError } from "../utils/AppError.js";
 import { uniqueSlug } from "../utils/slug.js";
 import type { Actor } from "../utils/actor.js";
@@ -82,6 +83,13 @@ const update = async (
 
 const remove = async (id: string, actor: Actor): Promise<void> => {
   const collection = await adminGet(id);
+  const hasActiveProducts = await Product.exists({
+    collectionId: collection.id,
+    isArchived: false,
+  });
+  if (hasActiveProducts) {
+    throw new AppError("No se puede eliminar la colección: tiene productos activos asociados.", 409);
+  }
   collection.isActive = false;
   await collection.save();
   await recordAudit({

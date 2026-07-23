@@ -80,7 +80,12 @@ describe("Audit adminList (service)", () => {
     expect(dates).toEqual([...dates].sort((a, b) => b - a));
 
     const all = await auditService.adminList({});
-    const resolved = all.items.find((r) => r.actorUsername === admin.username)!;
+    // Disambiguate from the admin login's own audit entry (module "auth",
+    // written automatically by the same actor — see auth.audit.test.ts):
+    // this test's fixture uses "test-module" and set the ip explicitly.
+    const resolved = all.items.find(
+      (r) => r.actorUsername === admin.username && r.module === "test-module",
+    )!;
     expect(resolved).toBeDefined();
     expect(resolved.actorEmail).toBe(admin.email);
     expect(resolved).toHaveProperty("before");

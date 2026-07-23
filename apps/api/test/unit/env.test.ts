@@ -6,4 +6,8 @@ describe("env", () => {
     expect(env.mercadoPagoAccessToken).toBe("TEST-mp-access-token-placeholder-000000000000");
     expect(env.mercadoPagoWebhookSecret).toBe("mp-webhook-secret-placeholder-000000000000");
   });
+
+  it("defaults sentryDsn to empty string without failing fast when SENTRY_DSN is unset", () => {
+    expect(env.sentryDsn).toBe("");
+  });
 });

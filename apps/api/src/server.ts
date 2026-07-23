@@ -2,8 +2,11 @@ import type { Server } from "node:http";
 import { env } from "./config/env.js";
 import { logger } from "./config/logger.js";
 import { connectDatabase, disconnectDatabase } from "./config/db.js";
+import { initSentry, captureException, flush as flushSentry } from "./config/sentry.js";
 import { buildApp } from "./app.js";
 import * as orderService from "./services/order.service.js";
+
+initSentry();
 
 // Reconciliation sweep interval. Every 5 min comfortably beats the 15-min
 // reservation TTL, so a lost/delayed `payment_intent.succeeded` webhook is
@@ -32,6 +35,7 @@ const start = async (): Promise<void> => {
     setInterval(() => {
       void orderService.reconcilePendingOrders().catch((error: unknown) => {
         logger.error({ err: error }, "Fallo en la reconciliación de órdenes pendientes.");
+        captureException(error, { tags: { job: "reconcilePendingOrders" } });
       });
     }, RECONCILE_INTERVAL_MS).unref();
   }
@@ -51,15 +55,20 @@ const start = async (): Promise<void> => {
 
 process.on("unhandledRejection", (reason) => {
   logger.error({ err: reason }, "Unhandled rejection");
-  process.exit(1);
+  captureException(reason);
+  // Flush before exiting: Sentry sends events asynchronously, and the process
+  // would otherwise die before the event reaches Sentry's servers.
+  void flushSentry().finally(() => process.exit(1));
 });
 
 process.on("uncaughtException", (error) => {
   logger.error({ err: error }, "Uncaught exception");
-  process.exit(1);
+  captureException(error);
+  void flushSentry().finally(() => process.exit(1));
 });
 
 start().catch((error: unknown) => {
   logger.error({ err: error }, "Fallo al iniciar la API");
-  process.exit(1);
+  captureException(error, { tags: { phase: "startup" } });
+  void flushSentry().finally(() => process.exit(1));
 });

@@ -10,6 +10,7 @@ import {
 import * as adminAuth from "../services/adminAuth.service.js";
 import * as twoFactor from "../services/twoFactor.service.js";
 import { revokeSession, rotateSession } from "../services/session.service.js";
+import { getActor } from "../utils/actor.js";
 
 /**
  * Admin auth controllers. The refresh cookie is scoped to the admin auth path
@@ -23,13 +24,13 @@ const readRefreshCookie = (req: Request): string | undefined =>
 
 const login = asyncHandler(async (req, res) => {
   const { email, password, totp } = req.body;
-  const { tokens, user } = await adminAuth.login(email, password, totp);
+  const { tokens, user } = await adminAuth.login(email, password, totp, req.ip);
   setAuthCookies(res, tokens, ADMIN_REFRESH_PATH);
   sendResponse({ res, message: "Sesión iniciada.", data: { user } });
 });
 
 const setup2fa = asyncHandler(async (req, res) => {
-  const data = await twoFactor.setupTwoFactor(req.auth!.id);
+  const data = await twoFactor.setupTwoFactor(getActor(req));
   sendResponse({
     res,
     message: "Escanea el código en tu app de autenticación y confirma con un código.",
@@ -38,12 +39,12 @@ const setup2fa = asyncHandler(async (req, res) => {
 });
 
 const enable2fa = asyncHandler(async (req, res) => {
-  await twoFactor.enableTwoFactor(req.auth!.id, req.body.totp);
+  await twoFactor.enableTwoFactor(getActor(req), req.body.totp);
   sendResponse({ res, message: "Autenticación de dos pasos activada.", data: null });
 });
 
 const disable2fa = asyncHandler(async (req, res) => {
-  await twoFactor.disableTwoFactor(req.auth!.id, req.body.totp);
+  await twoFactor.disableTwoFactor(getActor(req), req.body.totp);
   sendResponse({ res, message: "Autenticación de dos pasos desactivada.", data: null });
 });
 
