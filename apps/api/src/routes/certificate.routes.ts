@@ -27,6 +27,7 @@ router.get("/:certId/download", ctrl.download);
 const adminRouter = Router();
 adminRouter.use(protect, restrictTo(AdminRole.Admin, AdminRole.Editor));
 
+adminRouter.get("/", ctrl.adminList);
 adminRouter.post("/:certId/reissue", ctrl.adminReissue);
 
 export { router as certificateRouter, adminRouter as certificateAdminRouter };

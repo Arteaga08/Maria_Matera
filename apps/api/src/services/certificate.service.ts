@@ -1,15 +1,18 @@
 import { UserType } from "@maria-matera/shared";
+import type { PaginationMeta } from "@maria-matera/shared";
 import { logger } from "../config/logger.js";
 import {
   Certificate,
   type CertificateDocument,
   type CertificateSpecs,
 } from "../models/Certificate.js";
-import type { OrderDocument, OrderItemSnapshot } from "../models/Order.js";
+import { Customer } from "../models/Customer.js";
+import { Order, type OrderDocument, type OrderItemSnapshot } from "../models/Order.js";
 import { Product } from "../models/Product.js";
 import { ProductVariant } from "../models/ProductVariant.js";
 import { AppError } from "../utils/AppError.js";
 import type { Actor } from "../utils/actor.js";
+import { parseListQuery, buildMeta } from "../utils/listQuery.js";
 import { generateCertificateSerial } from "../utils/serial.js";
 import { recordAudit } from "./audit.service.js";
 import { deleteRawAsset, uploadRawPdf } from "./media.service.js";
@@ -223,6 +226,108 @@ const getMineDownload = async (
 
 // --- Admin ---------------------------------------------------------------
 
+const ADMIN_LIST_ALLOWED_SORT = ["issuedAt", "serialNumber"];
+
+interface CertificateRow {
+  id: string;
+  serialNumber: string;
+  sku: string;
+  itemName: string;
+  orderId: string;
+  orderNumber?: string;
+  customerId: string;
+  customerName?: string;
+  customerEmail?: string;
+  issuedAt: Date;
+  pdfUrl: string;
+}
+
+const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Paginated admin listing. Search covers the certificate's own fields
+ * (serial, snapshot SKU/name) directly, plus order number and customer
+ * name/email via id pre-lookups (same approach as the Orders admin list) —
+ * simpler than a multi-`$lookup` aggregation at this catalog's volume.
+ */
+const adminList = async (
+  query: Record<string, unknown>,
+): Promise<{ items: CertificateRow[]; meta: PaginationMeta }> => {
+  const { page, pageSize, skip, sort } = parseListQuery(query, {
+    allowedSort: ADMIN_LIST_ALLOWED_SORT,
+    defaultSort: "-issuedAt",
+  });
+
+  const filter: Record<string, unknown> = {};
+
+  const from = typeof query.from === "string" ? new Date(query.from) : undefined;
+  const to = typeof query.to === "string" ? new Date(query.to) : undefined;
+  if ((from && !Number.isNaN(from.getTime())) || (to && !Number.isNaN(to.getTime()))) {
+    filter.issuedAt = {
+      ...(from && !Number.isNaN(from.getTime()) ? { $gte: from } : {}),
+      ...(to && !Number.isNaN(to.getTime()) ? { $lte: to } : {}),
+    };
+  }
+
+  if (typeof query.search === "string" && query.search.trim()) {
+    const regex = new RegExp(escapeRegex(query.search.trim()), "i");
+    const [orderIds, customerIds] = await Promise.all([
+      Order.find({ orderNumber: regex }).select("_id").exec(),
+      Customer.find({ $or: [{ name: regex }, { email: regex }] })
+        .select("_id")
+        .exec(),
+    ]);
+    filter.$or = [
+      { serialNumber: regex },
+      { "orderItemSnapshot.sku": regex },
+      { "orderItemSnapshot.name": regex },
+      ...(orderIds.length ? [{ orderId: { $in: orderIds.map((o) => o._id) } }] : []),
+      ...(customerIds.length ? [{ customerId: { $in: customerIds.map((c) => c._id) } }] : []),
+    ];
+  }
+
+  const [certificates, total] = await Promise.all([
+    Certificate.find(filter).sort(sort).skip(skip).limit(pageSize).exec(),
+    Certificate.countDocuments(filter),
+  ]);
+
+  // Annotate rows with their order number and customer identity in two $in
+  // fetches (never N+1 queries).
+  const orderIdSet = [...new Set(certificates.map((c) => c.orderId.toString()))];
+  const customerIdSet = [...new Set(certificates.map((c) => c.customerId.toString()))];
+  const [orders, customers] = await Promise.all([
+    Order.find({ _id: { $in: orderIdSet } })
+      .select("orderNumber")
+      .exec(),
+    Customer.find({ _id: { $in: customerIdSet } })
+      .select("name email")
+      .exec(),
+  ]);
+  const orderById = new Map(orders.map((o) => [o.id as string, o.orderNumber]));
+  const customerById = new Map(
+    customers.map((c) => [c.id as string, { name: c.name, email: c.email }]),
+  );
+
+  const items: CertificateRow[] = certificates.map((cert) => {
+    const customer = customerById.get(cert.customerId.toString());
+    return {
+      id: cert.id as string,
+      serialNumber: cert.serialNumber,
+      sku: cert.orderItemSnapshot.sku,
+      itemName: cert.orderItemSnapshot.name,
+      orderId: cert.orderId.toString(),
+      orderNumber: orderById.get(cert.orderId.toString()),
+      customerId: cert.customerId.toString(),
+      customerName: customer?.name,
+      customerEmail: customer?.email,
+      issuedAt: cert.issuedAt,
+      pdfUrl: cert.pdfUrl,
+    };
+  });
+
+  return { items, meta: buildMeta(page, pageSize, total) };
+};
+
 const adminGetById = async (certId: string): Promise<CertificateDocument> => {
   const certificate = await Certificate.findById(certId);
   if (!certificate) {
@@ -285,4 +390,5 @@ const adminReissue = async (certId: string, actor: Actor): Promise<CertificateDo
   return certificate;
 };
 
-export { issueForOrder, listMine, getMineDownload, adminReissue };
+export type { CertificateRow };
+export { issueForOrder, listMine, getMineDownload, adminList, adminReissue };

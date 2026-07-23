@@ -29,6 +29,11 @@ const download = asyncHandler(async (req, res) => {
 
 // --- Admin-facing ------------------------------------------------------------
 
+const adminList = asyncHandler(async (req, res) => {
+  const { items, meta } = await certificateService.adminList(req.query);
+  sendResponse({ res, message: "Certificados.", data: { items }, meta });
+});
+
 const adminReissue = asyncHandler(async (req, res) => {
   const certificate = await certificateService.adminReissue(
     req.params.certId as string,
@@ -37,4 +42,4 @@ const adminReissue = asyncHandler(async (req, res) => {
   sendResponse({ res, message: "Certificado reemitido.", data: { certificate } });
 });
 
-export { list, download, adminReissue };
+export { list, download, adminList, adminReissue };
