@@ -34,6 +34,7 @@ const broadcastLimiter = createRateLimiter({
   max: 5,
   message: "Demasiados envíos de cupón. Intenta de nuevo más tarde.",
 });
+adminRouter.get("/stats", ctrl.adminStats);
 adminRouter.post("/broadcast/:couponId", broadcastLimiter, ctrl.broadcast);
 
 export { publicRouter as newsletterPublicRouter, adminRouter as marketingAdminRouter };

@@ -102,4 +102,37 @@ const broadcastCoupon = async (
   return { sent };
 };
 
-export { subscribe, confirm, unsubscribe, getCouponForBroadcast, broadcastCoupon };
+// --- Admin panel stats (Bloque 2 dashboard) ----------------------------------
+
+interface SubscriberStatsQuery {
+  from?: string;
+  to?: string;
+}
+
+interface SubscriberStats {
+  totalSubscribed: number;
+  newInRange: number;
+  rangeFrom: Date;
+  rangeTo: Date;
+}
+
+const adminStats = async (query: SubscriberStatsQuery): Promise<SubscriberStats> => {
+  const to = query.to ? new Date(query.to) : new Date();
+  const from = query.from ? new Date(query.from) : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from > to) {
+    throw new AppError("El rango de fechas no es válido.", 400);
+  }
+
+  const [totalSubscribed, newInRange] = await Promise.all([
+    Subscriber.countDocuments({ status: SubscriberStatus.Subscribed }),
+    Subscriber.countDocuments({
+      status: SubscriberStatus.Subscribed,
+      createdAt: { $gte: from, $lt: to },
+    }),
+  ]);
+
+  return { totalSubscribed, newInRange, rangeFrom: from, rangeTo: to };
+};
+
+export type { SubscriberStats, SubscriberStatsQuery };
+export { subscribe, confirm, unsubscribe, getCouponForBroadcast, broadcastCoupon, adminStats };

@@ -60,4 +60,12 @@ const broadcast = asyncHandler(async (req, res) => {
   });
 });
 
-export { subscribe, confirm, unsubscribe, broadcast };
+const adminStats = asyncHandler(async (req, res) => {
+  const stats = await subscribers.adminStats({
+    from: req.query.from as string | undefined,
+    to: req.query.to as string | undefined,
+  });
+  sendResponse({ res, message: "Estadísticas de marketing.", data: { stats } });
+});
+
+export { subscribe, confirm, unsubscribe, broadcast, adminStats };

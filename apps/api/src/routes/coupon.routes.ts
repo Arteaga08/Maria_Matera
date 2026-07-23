@@ -28,6 +28,7 @@ const adminRouter = Router();
 adminRouter.use(protect, restrictTo(AdminRole.Admin, AdminRole.Editor));
 adminRouter.get("/", ctrl.adminList);
 adminRouter.get("/:id", ctrl.adminGet);
+adminRouter.get("/:id/performance", ctrl.adminPerformance);
 adminRouter.post("/", validate(createCouponSchema), ctrl.create);
 adminRouter.patch("/:id", validate(updateCouponSchema), ctrl.update);
 adminRouter.delete("/:id", ctrl.remove);

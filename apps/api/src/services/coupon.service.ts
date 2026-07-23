@@ -1,10 +1,14 @@
-import type { ClientSession } from "mongoose";
+import type { ClientSession, FilterQuery } from "mongoose";
 import { CouponType, CustomerTier, UserType } from "@maria-matera/shared";
+import type { PaginationMeta } from "@maria-matera/shared";
 import { Coupon, type CouponDocument } from "../models/Coupon.js";
 import { CouponRedemption } from "../models/CouponRedemption.js";
+import { Order } from "../models/Order.js";
 import { AppError } from "../utils/AppError.js";
 import type { Actor } from "../utils/actor.js";
+import { parseListQuery, buildMeta } from "../utils/listQuery.js";
 import { recordAudit } from "./audit.service.js";
+import { REALIZED_SALE_STATUSES } from "./order.service.js";
 
 /**
  * Coupon business logic. Admin CRUD (audited) + a public preview/validation that
@@ -51,8 +55,132 @@ const computeDiscount = (coupon: CouponDocument, subtotalCents: number): number 
   return 0; // free_shipping: applied against shipping cost at checkout
 };
 
-const adminList = (): Promise<CouponDocument[]> =>
-  Coupon.find().sort({ createdAt: -1 }).exec();
+const ADMIN_LIST_ALLOWED_SORT = ["createdAt", "validTo", "usedCount"];
+
+type CouponComputedStatus = "vigente" | "expirado" | "agotado";
+
+interface CouponRow {
+  coupon: CouponDocument;
+  computedStatus: CouponComputedStatus;
+}
+
+const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Exhausted wins over expired: a fully-used coupon reads "agotado" even past its window. */
+const computeStatus = (coupon: CouponDocument, now: Date): CouponComputedStatus => {
+  if (coupon.maxRedemptions !== undefined && coupon.usedCount >= coupon.maxRedemptions) {
+    return "agotado";
+  }
+  if (coupon.validTo < now) {
+    return "expirado";
+  }
+  return "vigente";
+};
+
+/** Translates a computed status back into the Mongo filter that produces it. */
+const statusFilter = (status: string, now: Date): FilterQuery<CouponDocument> | undefined => {
+  if (status === "agotado") {
+    return {
+      maxRedemptions: { $exists: true },
+      $expr: { $gte: ["$usedCount", "$maxRedemptions"] },
+    };
+  }
+  if (status === "expirado") {
+    return {
+      validTo: { $lt: now },
+      $or: [
+        { maxRedemptions: { $exists: false } },
+        { $expr: { $lt: ["$usedCount", "$maxRedemptions"] } },
+      ],
+    };
+  }
+  if (status === "vigente") {
+    return {
+      validTo: { $gte: now },
+      $or: [
+        { maxRedemptions: { $exists: false } },
+        { $expr: { $lt: ["$usedCount", "$maxRedemptions"] } },
+      ],
+    };
+  }
+  return undefined;
+};
+
+const adminList = async (
+  query: Record<string, unknown>,
+): Promise<{ items: CouponRow[]; meta: PaginationMeta }> => {
+  const { page, pageSize, skip, sort } = parseListQuery(query, {
+    allowedSort: ADMIN_LIST_ALLOWED_SORT,
+    defaultSort: "-createdAt",
+  });
+  const now = new Date();
+
+  const filter: FilterQuery<CouponDocument> = {};
+  if (query.isActive === "true") {
+    filter.isActive = true;
+  } else if (query.isActive === "false") {
+    filter.isActive = false;
+  }
+  if (query.isVipOnly === "true") {
+    filter.isVipOnly = true;
+  } else if (query.isVipOnly === "false") {
+    filter.isVipOnly = false;
+  }
+  if (typeof query.status === "string") {
+    Object.assign(filter, statusFilter(query.status, now));
+  }
+  if (typeof query.search === "string" && query.search.trim()) {
+    filter.code = new RegExp(escapeRegex(query.search.trim()), "i");
+  }
+
+  const [coupons, total] = await Promise.all([
+    Coupon.find(filter).sort(sort).skip(skip).limit(pageSize).exec(),
+    Coupon.countDocuments(filter),
+  ]);
+
+  return {
+    items: coupons.map((coupon) => ({ coupon, computedStatus: computeStatus(coupon, now) })),
+    meta: buildMeta(page, pageSize, total),
+  };
+};
+
+interface CouponPerformance {
+  redemptions: { total: number };
+  orders: { count: number; revenueCents: number; discountCents: number };
+}
+
+/**
+ * What the coupon actually produced: realized orders only (paid and never
+ * reversed), so "revenue it brought in" vs "discount it cost" are honest
+ * business figures, immune to abandoned or refunded checkouts.
+ */
+const adminPerformance = async (id: string): Promise<CouponPerformance> => {
+  const coupon = await adminGet(id);
+
+  const [redemptionsTotal, orderAgg] = await Promise.all([
+    CouponRedemption.countDocuments({ couponId: coupon._id }),
+    Order.aggregate<{ count: number; revenueCents: number; discountCents: number }>([
+      { $match: { couponCode: coupon.code, status: { $in: REALIZED_SALE_STATUSES } } },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          revenueCents: { $sum: "$totalCents" },
+          discountCents: { $sum: { $ifNull: ["$discountCents", 0] } },
+        },
+      },
+    ]),
+  ]);
+
+  return {
+    redemptions: { total: redemptionsTotal },
+    orders: {
+      count: orderAgg[0]?.count ?? 0,
+      revenueCents: orderAgg[0]?.revenueCents ?? 0,
+      discountCents: orderAgg[0]?.discountCents ?? 0,
+    },
+  };
+};
 
 const adminGet = async (id: string): Promise<CouponDocument> => {
   const coupon = await Coupon.findById(id);
@@ -265,9 +393,18 @@ const redeem = async (
   };
 };
 
-export type { CreateCouponInput, UpdateCouponInput, CouponPreview, RedeemResult };
+export type {
+  CreateCouponInput,
+  UpdateCouponInput,
+  CouponPreview,
+  RedeemResult,
+  CouponRow,
+  CouponPerformance,
+  CouponComputedStatus,
+};
 export {
   adminList,
+  adminPerformance,
   adminGet,
   create,
   update,

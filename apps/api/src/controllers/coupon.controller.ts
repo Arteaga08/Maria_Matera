@@ -7,9 +7,14 @@ import * as coupons from "../services/coupon.service.js";
  * Coupon controllers. Admin CRUD + a public validation/preview endpoint.
  */
 
-const adminList = asyncHandler(async (_req, res) => {
-  const items = await coupons.adminList();
-  sendResponse({ res, message: "Cupones.", data: { coupons: items } });
+const adminList = asyncHandler(async (req, res) => {
+  const { items, meta } = await coupons.adminList(req.query);
+  sendResponse({ res, message: "Cupones.", data: { items }, meta });
+});
+
+const adminPerformance = asyncHandler(async (req, res) => {
+  const performance = await coupons.adminPerformance(req.params.id as string);
+  sendResponse({ res, message: "Desempeño del cupón.", data: { performance } });
 });
 
 const adminGet = asyncHandler(async (req, res) => {
@@ -37,4 +42,4 @@ const validatePublic = asyncHandler(async (req, res) => {
   sendResponse({ res, message: "Cupón válido.", data: { coupon: preview } });
 });
 
-export { adminList, adminGet, create, update, remove, validatePublic };
+export { adminList, adminPerformance, adminGet, create, update, remove, validatePublic };
