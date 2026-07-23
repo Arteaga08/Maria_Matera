@@ -1054,6 +1054,7 @@ const adminRefund = async (
 export type { CreateOrderInput, CreateOrderResult };
 export {
   ALLOWED_TRANSITIONS,
+  REALIZED_SALE_STATUSES,
   createOrder,
   listMine,
   getMine,
