@@ -33,6 +33,9 @@ const auditLogSchema = new Schema<AuditLogDocument>(
   { timestamps: { createdAt: true, updatedAt: false } },
 );
 
+// Backs the dashboard's global newest-first listing.
+auditLogSchema.index({ createdAt: -1 });
+
 const AuditLog: Model<AuditLogDocument> =
   (models.AuditLog as Model<AuditLogDocument>) ??
   model<AuditLogDocument>("AuditLog", auditLogSchema);
